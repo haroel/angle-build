@@ -104,18 +104,12 @@ jobs:
           git clone $DEPOT_TOOLS_REPO depot_tools
           echo "$PWD/depot_tools" >> $GITHUB_PATH
 
-      - name: Fetch ANGLE
+      - name: Checkout ANGLE
         run: |
           mkdir angle_src
           cd angle_src
-          fetch angle
-          cd angle
-          echo "Checking out $ANGLE_BRANCH"
-          git checkout $ANGLE_BRANCH
-
-      - name: Sync Dependencies
-        run: |
-          cd angle_src
+          
+          # Configure gclient manually to avoid fetch issues
           cat > .gclient << 'EOF'
           solutions = [
             {
@@ -127,6 +121,15 @@ jobs:
           ]
           target_os = ["ios"]
           EOF
+          
+          # Sync code
+          gclient sync -D
+          
+          cd angle
+          echo "Checking out $ANGLE_BRANCH"
+          git checkout $ANGLE_BRANCH
+          
+          # Sync dependencies for specific branch
           gclient sync -D
 
       - name: Build iOS arm64 (Device)
@@ -202,18 +205,12 @@ jobs:
           git clone $DEPOT_TOOLS_REPO depot_tools
           echo "$PWD/depot_tools" >> $GITHUB_PATH
 
-      - name: Fetch ANGLE
+      - name: Checkout ANGLE
         run: |
           mkdir angle_src
           cd angle_src
-          fetch angle
-          cd angle
-          echo "Checking out $ANGLE_BRANCH"
-          git checkout $ANGLE_BRANCH
-
-      - name: Sync Dependencies
-        run: |
-          cd angle_src
+          
+          # Configure gclient manually to avoid fetch issues
           cat > .gclient << 'EOF'
           solutions = [
             {
@@ -225,6 +222,15 @@ jobs:
           ]
           target_os = ["mac"]
           EOF
+          
+          # Sync code
+          gclient sync -D
+          
+          cd angle
+          echo "Checking out $ANGLE_BRANCH"
+          git checkout $ANGLE_BRANCH
+          
+          # Sync dependencies for specific branch
           gclient sync -D
 
       - name: Build macOS arm64
