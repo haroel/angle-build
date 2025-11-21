@@ -17,4 +17,4 @@ angle_build_samples = false
 symbol_level = 0
 ios_enable_code_signing = false
 enable_ios_bitcode = false
-
+use_thin_lto = false

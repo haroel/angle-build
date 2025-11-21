@@ -14,4 +14,4 @@ angle_build_all = false
 angle_build_tests = false
 angle_build_samples = false
 symbol_level = 0
-
+use_thin_lto = false
