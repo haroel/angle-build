@@ -1,0 +1,308 @@
+name: Build ANGLE Static Libraries
+
+on:
+  workflow_dispatch:
+    inputs:
+      angle_branch:
+        description: "ANGLE branch or commit to build"
+        required: true
+        default: "chromium/6834"
+  push:
+    tags:
+      - 'v*'
+
+env:
+  ANGLE_BRANCH: ${{ github.event.inputs.angle_branch || 'chromium/6834' }}
+  DEPOT_TOOLS_REPO: "https://chromium.googlesource.com/chromium/tools/depot_tools.git"
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      release_id: ${{ steps.create_release.outputs.release_id }}
+    steps:
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            const isTag = context.ref.startsWith('refs/tags/');
+            const branch = process.env.ANGLE_BRANCH;
+            
+            // Determine release tag name
+            let tagName = isTag ? tag : `angle-build-${new Date().toISOString().split('T')[0]}`;
+            let releaseName = isTag ? `Release ${tag}` : `ANGLE Build ${branch}`;
+            
+            const body = [
+              `ANGLE Static Libraries (Branch: ${branch})`,
+              '',
+              '**Note: Precompiled static libraries for iOS and macOS (Metal Backend only)**',
+              '- **Backend**: Metal',
+              '- **OpenGL ES Support**: Up to 3.1 (Provided headers include GLES 3.1)',
+              '',
+              '## artifacts',
+              '',
+              '### iOS (XCFramework)',
+              '- `libangle_ios.zip`',
+              '- Contains `angle.xcframework` (arm64 device + arm64 simulator)',
+              '- Libraries: `libGLESv2_static`, `libEGL_static`',
+              '',
+              '### macOS (XCFramework)',
+              '- `libangle_mac.zip`',
+              '- Contains `angle.xcframework` (arm64)',
+              '- Libraries: `libGLESv2_static`, `libEGL_static`',
+            ].join('\n');
+            
+            let release;
+            try {
+              // Check if release exists (for re-runs on same tag)
+              try {
+                 release = await github.rest.repos.getReleaseByTag({
+                   owner: context.repo.owner,
+                   repo: context.repo.repo,
+                   tag: tagName
+                 });
+                 release = release.data;
+              } catch (e) {
+                 // Not found, create new
+                 release = await github.rest.repos.createRelease({
+                   owner: context.repo.owner,
+                   repo: context.repo.repo,
+                   tag_name: tagName,
+                   name: releaseName,
+                   draft: true,
+                   prerelease: false,
+                   body: body,
+                   target_commitish: context.sha
+                 }).then(r => r.data);
+              }
+            } catch (error) {
+              console.error('Error creating/getting release:', error);
+              throw error;
+            }
+            
+            core.setOutput('upload_url', release.upload_url);
+            core.setOutput('release_id', release.id);
+            return release;
+
+  build-ios:
+    name: Build iOS
+    needs: create-release
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Depot Tools
+        run: |
+          git clone $DEPOT_TOOLS_REPO depot_tools
+          echo "$PWD/depot_tools" >> $GITHUB_PATH
+
+      - name: Fetch ANGLE
+        run: |
+          mkdir angle_src
+          cd angle_src
+          fetch angle
+          cd angle
+          echo "Checking out $ANGLE_BRANCH"
+          git checkout $ANGLE_BRANCH
+        env:
+          PATH: ${{ github.workspace }}/depot_tools:${{ env.PATH }}
+
+      - name: Sync Dependencies
+        run: |
+          cd angle_src
+          cat > .gclient << 'EOF'
+          solutions = [
+            {
+              "name": "angle",
+              "url": "https://chromium.googlesource.com/angle/angle.git",
+              "managed": False,
+              "custom_deps": {},
+            },
+          ]
+          target_os = ["ios"]
+          EOF
+          gclient sync -D
+        env:
+          PATH: ${{ github.workspace }}/depot_tools:${{ env.PATH }}
+
+      - name: Build iOS arm64 (Device)
+        run: |
+          cd angle_src/angle
+          mkdir -p out/ios_device
+          cp ${{ github.workspace }}/args.ios.arm64.gn out/ios_device/args.gn
+          gn gen out/ios_device
+          autoninja -C out/ios_device libGLESv2_static libEGL_static
+        env:
+          PATH: ${{ github.workspace }}/depot_tools:${{ env.PATH }}
+
+      - name: Build iOS arm64 (Simulator)
+        run: |
+          cd angle_src/angle
+          mkdir -p out/ios_sim
+          cp ${{ github.workspace }}/args.ios.arm64.simulator.gn out/ios_sim/args.gn
+          gn gen out/ios_sim
+          autoninja -C out/ios_sim libGLESv2_static libEGL_static
+        env:
+          PATH: ${{ github.workspace }}/depot_tools:${{ env.PATH }}
+
+      - name: Create XCFramework
+        run: |
+          cd angle_src/angle
+          
+          # Prepare headers
+          mkdir -p headers/GLESv2
+          # Copy GLES headers (GLES2, GLES3 which includes gl31.h)
+          cp -r include/GLES2 include/GLES3 include/KHR headers/GLESv2/
+          
+          mkdir -p headers/EGL
+          cp -r include/EGL include/KHR headers/EGL/
+          
+          # Create GLESv2.xcframework
+          xcodebuild -create-xcframework \
+            -library out/ios_device/obj/libGLESv2_static.a \
+            -headers headers/GLESv2 \
+            -library out/ios_sim/obj/libGLESv2_static.a \
+            -headers headers/GLESv2 \
+            -output GLESv2.xcframework
+
+          # Create EGL.xcframework
+          xcodebuild -create-xcframework \
+            -library out/ios_device/obj/libEGL_static.a \
+            -headers headers/EGL \
+            -library out/ios_sim/obj/libEGL_static.a \
+            -headers headers/EGL \
+            -output EGL.xcframework
+            
+        env:
+          PATH: ${{ github.workspace }}/depot_tools:${{ env.PATH }}
+
+      - name: Zip Artifacts
+        run: |
+          cd angle_src/angle
+          zip -r libangle_ios.zip GLESv2.xcframework EGL.xcframework
+          
+      - name: Upload Assets
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: angle_src/angle/libangle_ios.zip
+          asset_name: libangle_ios.zip
+          asset_content_type: application/zip
+
+  build-mac:
+    name: Build macOS
+    needs: create-release
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Depot Tools
+        run: |
+          git clone $DEPOT_TOOLS_REPO depot_tools
+          echo "$PWD/depot_tools" >> $GITHUB_PATH
+
+      - name: Fetch ANGLE
+        run: |
+          mkdir angle_src
+          cd angle_src
+          fetch angle
+          cd angle
+          echo "Checking out $ANGLE_BRANCH"
+          git checkout $ANGLE_BRANCH
+        env:
+          PATH: ${{ github.workspace }}/depot_tools:${{ env.PATH }}
+
+      - name: Sync Dependencies
+        run: |
+          cd angle_src
+          cat > .gclient << 'EOF'
+          solutions = [
+            {
+              "name": "angle",
+              "url": "https://chromium.googlesource.com/angle/angle.git",
+              "managed": False,
+              "custom_deps": {},
+            },
+          ]
+          target_os = ["mac"]
+          EOF
+          gclient sync -D
+        env:
+          PATH: ${{ github.workspace }}/depot_tools:${{ env.PATH }}
+
+      - name: Build macOS arm64
+        run: |
+          cd angle_src/angle
+          mkdir -p out/mac
+          cp ${{ github.workspace }}/args.mac.arm64.gn out/mac/args.gn
+          gn gen out/mac
+          autoninja -C out/mac libGLESv2_static libEGL_static
+        env:
+          PATH: ${{ github.workspace }}/depot_tools:${{ env.PATH }}
+
+      - name: Create XCFramework
+        run: |
+          cd angle_src/angle
+          
+          # Prepare headers
+          mkdir -p headers/GLESv2
+          # Copy GLES headers (GLES2, GLES3 which includes gl31.h)
+          cp -r include/GLES2 include/GLES3 include/KHR headers/GLESv2/
+          
+          mkdir -p headers/EGL
+          cp -r include/EGL include/KHR headers/EGL/
+          
+          # Create GLESv2.xcframework
+          xcodebuild -create-xcframework \
+            -library out/mac/obj/libGLESv2_static.a \
+            -headers headers/GLESv2 \
+            -output GLESv2.xcframework
+
+          # Create EGL.xcframework
+          xcodebuild -create-xcframework \
+            -library out/mac/obj/libEGL_static.a \
+            -headers headers/EGL \
+            -output EGL.xcframework
+            
+        env:
+          PATH: ${{ github.workspace }}/depot_tools:${{ env.PATH }}
+
+      - name: Zip Artifacts
+        run: |
+          cd angle_src/angle
+          zip -r libangle_mac.zip GLESv2.xcframework EGL.xcframework
+          
+      - name: Upload Assets
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: angle_src/angle/libangle_mac.zip
+          asset_name: libangle_mac.zip
+          asset_content_type: application/zip
+
+  publish-release:
+    name: Publish Release
+    needs: [build-ios, build-mac]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const release_id = ${{ needs.create-release.outputs.release_id }};
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: release_id,
+              draft: false
+            });
+

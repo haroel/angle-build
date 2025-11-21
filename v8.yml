@@ -1,0 +1,567 @@
+name: build and publish v8 libs
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  V8_VERSION: "14.3.127.5"
+  DEPOT_TOOLS_REPO: "https://chromium.googlesource.com/chromium/tools/depot_tools.git"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  create-release:
+    name: create release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      release_id: ${{ steps.create_release.outputs.release_id }}
+    steps:
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            const body = [
+              'V8 ${{ env.V8_VERSION }} Precompiled Static Libraries',
+              '',
+              '**Note: Please download the build artifacts below, DO NOT use Source code**',
+              '',
+              '## Supported Platforms',
+              '',
+              '### Android (arm64, arm, x64)',
+              '- Static library: `libv8_monolith-android-{arch}.zip`',
+              '- Header files: `include-android.zip`',
+              '- Each package includes: static library + args.gn + args.full.txt',
+              '',
+              '### iOS (XCFramework)',
+              '- Package: `libv8_monolith-ios.zip`',
+              '- Architectures: arm64 device + arm64 simulator',
+              '- Includes: XCFramework with headers + args.gn + args.full.txt for both variants',
+              '',
+              '### macOS (XCFramework)',
+              '- Package: `libv8_monolith-mac.zip`',
+              '- Architecture: arm64 (Apple Silicon)',
+              '- Includes: XCFramework with headers + args.gn + args.full.txt',
+              '',
+              '### Windows (x64)',
+              '- Static library: `libv8_monolith-win-x64.zip`',
+              '- Header files: `include-win.zip`',
+              '- Package includes: static library + args.gn + args.full.txt'
+            ].join('\n');
+            
+            const release = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `Release-${tag}`,
+              draft: true,
+              prerelease: false,
+              body: body
+            });
+            
+            core.setOutput('upload_url', release.data.upload_url);
+            core.setOutput('release_id', release.data.id);
+            return release.data;
+
+  build-android:
+    name: android
+    env:
+      JOB_NAME: android
+    needs: create-release
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [arm64, arm, x64]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+          
+      - name: Install NDK r28b
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r28b
+          add-to-path: false
+          local-cache: true
+
+      - name: compile v8
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          JOB_NAME: ${{ env.JOB_NAME }}
+          WORKSPACE: ${{ github.workspace }}
+        run: |
+          # Set NDK_ROOT from the setup-ndk action output
+          export NDK_ROOT="${{ steps.setup-ndk.outputs.ndk-path }}"
+          echo "NDK_ROOT from action: ${NDK_ROOT}"
+          
+          # Verify NDK installation
+          if [ -z "$NDK_ROOT" ] || [ ! -d "$NDK_ROOT" ]; then
+            echo "Error: NDK not found or NDK_ROOT is empty"
+            echo "NDK_ROOT = ${NDK_ROOT}"
+            exit 1
+          fi
+          
+          echo "NDK installed successfully at: ${NDK_ROOT}"
+          ls -la "${NDK_ROOT}"
+  
+          echo "::group::Prepare v8 build environment"
+          git clone $DEPOT_TOOLS_REPO > /dev/null
+          export PATH="$GITHUB_WORKSPACE/depot_tools:${PATH}"
+          gclient
+          fetch v8 > /dev/null
+          cd ${{ github.workspace }}/v8
+          
+          echo "Checkout v8 version: $V8_VERSION"
+          git checkout $V8_VERSION
+          
+          cat > ${{ github.workspace }}/.gclient << 'EOF'
+          solutions = [
+            {
+              "name": "v8",
+              "url": "https://chromium.googlesource.com/v8/v8.git",
+              "managed": False,
+              "custom_deps": {
+                "v8/test/benchmarks/data": None,
+                "v8/test/mozilla/data": None,
+                "v8/test/test262/data": None,
+                "v8/test/wasm-js/data": None,
+              },
+            },
+          ]
+          target_os = ['android']
+          EOF
+
+          echo "Install sysroot"
+          if [[ "${{ matrix.platform }}" == "arm64" || "${{ matrix.platform }}" == "x64" ]];then
+            INSTALL_SYSROOT_ARCH="amd64"
+          else
+            INSTALL_SYSROOT_ARCH="i386"
+          fi
+          python3 ./build/linux/sysroot_scripts/install-sysroot.py --arch=${INSTALL_SYSROOT_ARCH}
+
+          echo "Running gclient sync with dependencies..."
+          gclient sync -D --force --reset
+          ./build/install-build-deps.sh --no-prompt --no-chromeos-fonts || true
+          echo "::endgroup::"
+          echo "::group::Run pre-build script"
+          node ${{ github.workspace }}/builder.js
+          echo "NDK_ROOT=${NDK_ROOT}"
+          echo "::endgroup::"
+          echo "::group::Compile v8 static library"
+          mkdir -p out.gn/android.${{ matrix.platform }}.release/
+          cp ${{ github.workspace }}/args.android.${{ matrix.platform }}.gn ${{ github.workspace }}/v8/out.gn/android.${{ matrix.platform }}.release/args.gn
+          gn gen out.gn/android.${{ matrix.platform }}.release
+          ninja v8_monolith -C out.gn/android.${{ matrix.platform }}.release/
+          gn args --list out.gn/android.${{ matrix.platform }}.release > out.gn/android.${{ matrix.platform }}.release/args.full.txt
+          echo "::endgroup::"
+          echo "::group::Compress artifacts"
+          zip -j ../libv8_monolith-${{ env.JOB_NAME }}-${{ matrix.platform }}.zip \
+            out.gn/android.${{ matrix.platform }}.release/obj/libv8_monolith.a \
+            out.gn/android.${{ matrix.platform }}.release/args.gn \
+            out.gn/android.${{ matrix.platform }}.release/args.full.txt
+          if [ "${{ matrix.platform }}" = "arm64" ]; then
+            zip -r ../include-${{ env.JOB_NAME }}.zip include
+          fi
+          ls -a
+          echo "::endgroup::"
+      - name: Upload static library
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/libv8_monolith-${{ env.JOB_NAME }}-${{ matrix.platform }}.zip
+          asset_name: libv8_monolith-${{ env.JOB_NAME }}-${{ matrix.platform }}.zip
+          asset_content_type: application/zip
+      - name: Upload include
+        if: matrix.platform == 'arm64'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/include-${{ env.JOB_NAME }}.zip
+          asset_name: include-${{ env.JOB_NAME }}.zip
+          asset_content_type: application/zip
+
+  build-ios:
+    if: false
+    name: ios
+    env:
+      JOB_NAME: ios
+    needs: create-release
+    runs-on: macos-26
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+      - name: Prepare v8 environment
+        run: |
+          echo "::group::Prepare v8 build environment"
+          git clone $DEPOT_TOOLS_REPO > /dev/null
+          export PATH="$GITHUB_WORKSPACE/depot_tools:${PATH}"
+          gclient
+          fetch v8 > /dev/null
+          cd ${{ github.workspace }}/v8
+          
+          echo "Checkout v8 version: $V8_VERSION"
+          git checkout $V8_VERSION
+          
+          cat > ${{ github.workspace }}/.gclient << 'EOF'
+          solutions = [
+            {
+              "name": "v8",
+              "url": "https://chromium.googlesource.com/v8/v8.git",
+              "managed": False,
+              "custom_deps": {
+                "v8/test/benchmarks/data": None,
+                "v8/test/mozilla/data": None,
+                "v8/test/test262/data": None,
+                "v8/test/wasm-js/data": None,
+              },
+            },
+          ]
+          target_os = ['ios']
+          EOF
+          
+          echo "Running gclient sync with dependencies..."
+          gclient sync -D --force --reset
+          echo "::endgroup::"
+      - name: Build iOS arm64 (device)
+        env:
+          PLATFORM: arm64
+          JOB_NAME: ios
+          WORKSPACE: ${{ github.workspace }}
+        run: |
+          export PATH="$GITHUB_WORKSPACE/depot_tools:${PATH}"
+          cd ${{ github.workspace }}/v8
+          echo "::group::Run pre-build script for arm64"
+          node ${{ github.workspace }}/builder.js
+          echo "::endgroup::"
+          echo "::group::Compile v8 static library for arm64 (device)"
+          mkdir -p out.gn/ios.arm64.release/
+          cp ${{ github.workspace }}/args.ios.arm64.gn out.gn/ios.arm64.release/args.gn
+          gn gen out.gn/ios.arm64.release
+          ninja v8_monolith -C out.gn/ios.arm64.release/
+          gn args --list out.gn/ios.arm64.release > out.gn/ios.arm64.release/args.full.txt
+          echo "::endgroup::"
+      - name: Build iOS arm64 (simulator)
+        env:
+          PLATFORM: arm64.simulator
+          JOB_NAME: ios
+          WORKSPACE: ${{ github.workspace }}
+        run: |
+          export PATH="$GITHUB_WORKSPACE/depot_tools:${PATH}"
+          cd ${{ github.workspace }}/v8
+          echo "::group::Run pre-build script for arm64.simulator"
+          node ${{ github.workspace }}/builder.js
+          echo "::endgroup::"
+          echo "::group::Compile v8 static library for arm64 (simulator)"
+          mkdir -p out.gn/ios.arm64.simulator.release/
+          cp ${{ github.workspace }}/args.ios.arm64.simulator.gn out.gn/ios.arm64.simulator.release/args.gn
+          gn gen out.gn/ios.arm64.simulator.release
+          ninja v8_monolith -C out.gn/ios.arm64.simulator.release/
+          gn args --list out.gn/ios.arm64.simulator.release > out.gn/ios.arm64.simulator.release/args.full.txt
+          echo "::endgroup::"
+      - name: Create XCFramework
+        run: |
+          cd ${{ github.workspace }}/v8
+          echo "::group::Create XCFramework with headers"
+          
+          # Create framework structure for iOS device
+          mkdir -p frameworks/ios-arm64/libv8_monolith.framework/Headers
+          cp out.gn/ios.arm64.release/obj/libv8_monolith.a frameworks/ios-arm64/libv8_monolith.framework/libv8_monolith
+          cp -R include/* frameworks/ios-arm64/libv8_monolith.framework/Headers/
+          
+          # Create framework structure for iOS simulator
+          mkdir -p frameworks/ios-arm64-simulator/libv8_monolith.framework/Headers
+          cp out.gn/ios.arm64.simulator.release/obj/libv8_monolith.a frameworks/ios-arm64-simulator/libv8_monolith.framework/libv8_monolith
+          cp -R include/* frameworks/ios-arm64-simulator/libv8_monolith.framework/Headers/
+          
+          # Copy and customize Info.plist for each framework
+          sed "s/V8_VERSION_PLACEHOLDER/${{ env.V8_VERSION }}/g" ${{ github.workspace }}/Info.plist.template > frameworks/ios-arm64/libv8_monolith.framework/Info.plist
+          sed "s/V8_VERSION_PLACEHOLDER/${{ env.V8_VERSION }}/g" ${{ github.workspace }}/Info.plist.template > frameworks/ios-arm64-simulator/libv8_monolith.framework/Info.plist
+          
+          # Create XCFramework for iOS (device + simulator)
+          xcodebuild -create-xcframework \
+            -framework frameworks/ios-arm64/libv8_monolith.framework \
+            -framework frameworks/ios-arm64-simulator/libv8_monolith.framework \
+            -output libv8_monolith.xcframework
+          
+          # Verify XCFramework structure
+          echo "iOS XCFramework structure:"
+          ls -R libv8_monolith.xcframework
+          echo ""
+          echo "XCFramework top-level Info.plist (auto-generated by xcodebuild):"
+          cat libv8_monolith.xcframework/Info.plist
+          
+          echo "::endgroup::"
+          echo "::group::Compress artifacts"
+          zip -r ../libv8_monolith-${{ env.JOB_NAME }}.zip \
+            libv8_monolith.xcframework \
+            out.gn/ios.arm64.release/args.gn \
+            out.gn/ios.arm64.release/args.full.txt \
+            out.gn/ios.arm64.simulator.release/args.gn \
+            out.gn/ios.arm64.simulator.release/args.full.txt
+          ls -lh ../libv8_monolith-${{ env.JOB_NAME }}.zip
+          echo "::endgroup::"
+      - name: Upload XCFramework
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/libv8_monolith-${{ env.JOB_NAME }}.zip
+          asset_name: libv8_monolith-${{ env.JOB_NAME }}.zip
+          asset_content_type: application/zip
+
+  build-mac:
+    if: false
+    name: macos
+    env:
+      JOB_NAME: mac
+    needs: create-release
+    runs-on: macos-26
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+      - name: Prepare v8 environment
+        run: |
+          echo "::group::Prepare v8 build environment"
+          git clone $DEPOT_TOOLS_REPO > /dev/null
+          export PATH="$GITHUB_WORKSPACE/depot_tools:${PATH}"
+          gclient
+          fetch v8 > /dev/null
+          cd ${{ github.workspace }}/v8
+          
+          echo "Checkout v8 version: $V8_VERSION"
+          git checkout $V8_VERSION
+          
+          cat > ${{ github.workspace }}/.gclient << 'EOF'
+          solutions = [
+            {
+              "name": "v8",
+              "url": "https://chromium.googlesource.com/v8/v8.git",
+              "managed": False,
+              "custom_deps": {
+                "v8/test/benchmarks/data": None,
+                "v8/test/mozilla/data": None,
+                "v8/test/test262/data": None,
+                "v8/test/wasm-js/data": None,
+              },
+            },
+          ]
+          EOF
+          
+          echo "Running gclient sync with dependencies..."
+          gclient sync -D --force --reset
+          echo "::endgroup::"
+      - name: Build macOS arm64
+        env:
+          PLATFORM: arm64
+          JOB_NAME: ${{ env.JOB_NAME }}
+          WORKSPACE: ${{ github.workspace }}
+        run: |
+          export PATH="$GITHUB_WORKSPACE/depot_tools:${PATH}"
+          cd ${{ github.workspace }}/v8
+          echo "::group::Run pre-build script for macOS arm64"
+          node ${{ github.workspace }}/builder.js
+          echo "::endgroup::"
+          echo "::group::Compile v8 static library for macOS arm64"
+          mkdir -p out.gn/mac.arm64.release/
+          cp ${{ github.workspace }}/args.mac.arm64.gn out.gn/mac.arm64.release/args.gn
+          gn gen out.gn/mac.arm64.release
+          ninja v8_monolith -C out.gn/mac.arm64.release/
+          gn args --list out.gn/mac.arm64.release > out.gn/mac.arm64.release/args.full.txt
+          echo "::endgroup::"
+      - name: Create XCFramework
+        run: |
+          cd ${{ github.workspace }}/v8
+          echo "::group::Create XCFramework with headers"
+          
+          # Create framework structure for macOS
+          mkdir -p frameworks/macos-arm64/libv8_monolith.framework/Headers
+          cp out.gn/mac.arm64.release/obj/libv8_monolith.a frameworks/macos-arm64/libv8_monolith.framework/libv8_monolith
+          cp -R include/* frameworks/macos-arm64/libv8_monolith.framework/Headers/
+          
+          # Copy and customize Info.plist
+          sed "s/V8_VERSION_PLACEHOLDER/${{ env.V8_VERSION }}/g" ${{ github.workspace }}/Info.plist.template > frameworks/macos-arm64/libv8_monolith.framework/Info.plist
+          
+          # Create XCFramework for macOS
+          xcodebuild -create-xcframework \
+            -framework frameworks/macos-arm64/libv8_monolith.framework \
+            -output libv8_monolith.xcframework
+          
+          # Verify XCFramework structure
+          echo "macOS XCFramework structure:"
+          ls -R libv8_monolith.xcframework
+          echo ""
+          echo "XCFramework top-level Info.plist (auto-generated by xcodebuild):"
+          cat libv8_monolith.xcframework/Info.plist
+          
+          echo "::endgroup::"
+          echo "::group::Compress artifacts"
+          zip -r ../libv8_monolith-${{ env.JOB_NAME }}.zip \
+            libv8_monolith.xcframework \
+            out.gn/mac.arm64.release/args.gn \
+            out.gn/mac.arm64.release/args.full.txt
+          ls -lh ../libv8_monolith-${{ env.JOB_NAME }}.zip
+          echo "::endgroup::"
+      - name: Upload XCFramework
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/libv8_monolith-${{ env.JOB_NAME }}.zip
+          asset_name: libv8_monolith-${{ env.JOB_NAME }}.zip
+          asset_content_type: application/zip
+
+  build-win:
+    if: false
+    name: windows
+    env:
+      JOB_NAME: win
+    needs: create-release
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [x64]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+      - name: setup env
+        shell: pwsh
+        run: |
+          echo "${{ github.workspace }}/depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "DEPOT_TOOLS_WIN_TOOLCHAIN=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: prepared v8 build environment
+        run: |
+          echo "::group::Prepare v8 build environment"
+          git config --global depot-tools.allowGlobalGitConfig true
+          git clone $DEPOT_TOOLS_REPO > NUL
+          gclient
+          fetch v8
+          cd v8
+          
+          echo "Checkout v8 version: %V8_VERSION%"
+          git checkout $V8_VERSION
+          
+          cat > ../.gclient << 'EOF'
+          solutions = [
+            {
+              "name": "v8",
+              "url": "https://chromium.googlesource.com/v8/v8.git",
+              "managed": False,
+              "custom_deps": {
+                "v8/test/benchmarks/data": None,
+                "v8/test/mozilla/data": None,
+                "v8/test/test262/data": None,
+                "v8/test/wasm-js/data": None,
+              },
+            },
+          ]
+          EOF
+          
+          echo "Running gclient sync with dependencies..."
+          gclient sync -D --force --reset
+          echo "::endgroup::"
+      - name: run pre-build script
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          JOB_NAME: ${{ env.JOB_NAME }}
+          WORKSPACE: ${{ github.workspace }}
+        run: |
+          echo "::group::Run pre-build script"
+          node builder.js
+          echo "::endgroup::"
+      - name: compile v8 static library
+        shell: pwsh
+        run: |
+          echo "::group::Compile v8 static library"
+          New-Item -ItemType directory -Path v8/out.gn/win.${{ matrix.platform }}.release/
+          Copy-Item "args.win.${{ matrix.platform }}.gn" -Destination "v8/out.gn/win.${{ matrix.platform }}.release/args.gn" -force
+          Set-Location -Path v8
+          gn gen out.gn/win.${{ matrix.platform }}.release
+          ninja v8_monolith -C out.gn/win.${{ matrix.platform }}.release/
+          gn args --list out.gn/win.${{ matrix.platform }}.release > out.gn/win.${{ matrix.platform }}.release/args.full.txt
+          echo "::endgroup::"
+      - name: compress artifacts
+        shell: pwsh
+        run: |
+          echo "::group::Compress artifacts"
+          Compress-Archive -Path @(
+            "${{ github.workspace }}/v8/out.gn/win.${{ matrix.platform }}.release/obj/v8_monolith.lib",
+            "${{ github.workspace }}/v8/out.gn/win.${{ matrix.platform }}.release/args.gn",
+            "${{ github.workspace }}/v8/out.gn/win.${{ matrix.platform }}.release/args.full.txt"
+          ) -Destination ${{ github.workspace }}/libv8_monolith-${{ env.JOB_NAME }}-${{ matrix.platform }}.zip
+          if ("${{ matrix.platform }}" -eq "x64") {
+            Compress-Archive -Path ${{ github.workspace }}/v8/include -Destination ${{ github.workspace }}/include-${{ env.JOB_NAME }}.zip
+          }
+          echo "::endgroup::"
+      - name: Upload static library
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/libv8_monolith-${{ env.JOB_NAME }}-${{ matrix.platform }}.zip
+          asset_name: libv8_monolith-${{ env.JOB_NAME }}-${{ matrix.platform }}.zip
+          asset_content_type: application/zip
+      - name: Upload include
+        if: matrix.platform == 'x64'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ github.workspace }}/include-${{ env.JOB_NAME }}.zip
+          asset_name: include-${{ env.JOB_NAME }}.zip
+          asset_content_type: application/zip
+
+  publish-release:
+    name: publish release
+    needs: [build-android, build-ios, build-mac, build-win]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Publish Release
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const tag = context.ref.replace('refs/tags/', '');
+          const releases = await github.rest.repos.listReleases({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+          });
+          const release = releases.data.find(r => r.tag_name === tag);
+          if (release) {
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: release.id,
+              draft: false
+            });
+            console.log('Release published successfully');
+          }

@@ -1,0 +1,7 @@
+我需要将ANGLE（https://chromium.googlesource.com/angle/angle）编译成静态库给ios、mac使用
+1. 选择一个稳定分支，至少2025年的版本
+2. 仅使用METAL渲染后端,尽可能减少静态库大小
+3. 使用xcframework方式，方便xcode引入
+4. 构建参数直接填充到args.xxx.gn文件里面
+5. 实现github action实现，直接用github的打包机运行
+6. 参考v8.yml，创建release并将构建产物zip发布

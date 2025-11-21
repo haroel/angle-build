@@ -1,0 +1,17 @@
+target_os = "mac"
+target_cpu = "arm64"
+is_component_build = false
+is_debug = false
+angle_enable_metal = true
+angle_enable_gl = false
+angle_enable_vulkan = false
+angle_enable_null = false
+angle_enable_d3d9 = false
+angle_enable_d3d11 = false
+angle_enable_essl = true
+angle_enable_glsl = true
+angle_build_all = false
+angle_build_tests = false
+angle_build_samples = false
+symbol_level = 0
+
