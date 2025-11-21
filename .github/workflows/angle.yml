@@ -94,7 +94,7 @@ jobs:
   build-ios:
     name: Build iOS
     needs: create-release
-    runs-on: macos-26
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -106,6 +106,15 @@ jobs:
 
       - name: Checkout ANGLE
         run: |
+          # Xcode 16 (macos-16 image) has Metal Toolchain unbundled
+          # We need to ensure it's available or use an older image if problematic
+          # For now, try installing it if missing, though on CI this might be tricky
+          # Alternatively, use macos-15 which is more stable with Xcode 15
+          
+          # Try to install Metal Toolchain if missing
+          echo "Attempting to install Metal Toolchain..."
+          sudo xcodebuild -downloadComponent MetalToolchain || echo "Metal Toolchain download failed or not needed (might require Apple ID or already installed)"
+          
           mkdir angle_src
           cd angle_src
           
@@ -195,7 +204,7 @@ jobs:
   build-mac:
     name: Build macOS
     needs: create-release
-    runs-on: macos-26
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -207,6 +216,15 @@ jobs:
 
       - name: Checkout ANGLE
         run: |
+          # Xcode 16 (macos-16 image) has Metal Toolchain unbundled
+          # We need to ensure it's available or use an older image if problematic
+          # For now, try installing it if missing, though on CI this might be tricky
+          # Alternatively, use macos-15 which is more stable with Xcode 15
+          
+          # Try to install Metal Toolchain if missing
+          echo "Attempting to install Metal Toolchain..."
+          sudo xcodebuild -downloadComponent MetalToolchain || echo "Metal Toolchain download failed or not needed (might require Apple ID or already installed)"
+          
           mkdir angle_src
           cd angle_src
           
