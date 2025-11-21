@@ -11,6 +11,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 env:
   ANGLE_BRANCH: ${{ github.event.inputs.angle_branch || 'chromium/6834' }}
   DEPOT_TOOLS_REPO: "https://chromium.googlesource.com/chromium/tools/depot_tools.git"
