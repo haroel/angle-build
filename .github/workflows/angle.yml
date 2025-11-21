@@ -172,25 +172,23 @@ jobs:
           
           # Create GLESv2.xcframework (Includes GLES 2.0, 3.0, 3.1)
           # Ensure libraries are full archives (not thin archives)
-          libtool -static -o out/ios_device/obj/libGLESv2_full.a out/ios_device/obj/libGLESv2_static.a
-          libtool -static -o out/ios_sim/obj/libGLESv2_full.a out/ios_sim/obj/libGLESv2_static.a
+          # We use 'cp' because GN is configured to produce full archives with is_component_build=false
+          # If it's still thin, we might need 'ar' but let's try avoiding libtool re-pack first
+          # as libtool complains about thin archives as input.
           
           # Note: The library name is historically "libGLESv2" even for GLES 3.x
           xcodebuild -create-xcframework \
-            -library out/ios_device/obj/libGLESv2_full.a \
+            -library out/ios_device/obj/libGLESv2_static.a \
             -headers headers/GLESv2 \
-            -library out/ios_sim/obj/libGLESv2_full.a \
+            -library out/ios_sim/obj/libGLESv2_static.a \
             -headers headers/GLESv2 \
             -output GLESv2.xcframework
 
           # Create EGL.xcframework
-          libtool -static -o out/ios_device/obj/libEGL_full.a out/ios_device/obj/libEGL_static.a
-          libtool -static -o out/ios_sim/obj/libEGL_full.a out/ios_sim/obj/libEGL_static.a
-
           xcodebuild -create-xcframework \
-            -library out/ios_device/obj/libEGL_full.a \
+            -library out/ios_device/obj/libEGL_static.a \
             -headers headers/EGL \
-            -library out/ios_sim/obj/libEGL_full.a \
+            -library out/ios_sim/obj/libEGL_static.a \
             -headers headers/EGL \
             -output EGL.xcframework
 
@@ -280,20 +278,15 @@ jobs:
           cp -r include/EGL include/KHR headers/EGL/
           
           # Create GLESv2.xcframework (Includes GLES 2.0, 3.0, 3.1)
-          # Ensure libraries are full archives
-          libtool -static -o out/mac/obj/libGLESv2_full.a out/mac/obj/libGLESv2_static.a
-          
           # Note: The library name is historically "libGLESv2" even for GLES 3.x
           xcodebuild -create-xcframework \
-            -library out/mac/obj/libGLESv2_full.a \
+            -library out/mac/obj/libGLESv2_static.a \
             -headers headers/GLESv2 \
             -output GLESv2.xcframework
 
           # Create EGL.xcframework
-          libtool -static -o out/mac/obj/libEGL_full.a out/mac/obj/libEGL_static.a
-
           xcodebuild -create-xcframework \
-            -library out/mac/obj/libEGL_full.a \
+            -library out/mac/obj/libEGL_static.a \
             -headers headers/EGL \
             -output EGL.xcframework
 

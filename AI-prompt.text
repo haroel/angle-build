@@ -5,3 +5,4 @@
 4. 构建参数直接填充到args.xxx.gn文件里面
 5. 实现github action实现，直接用github的打包机运行
 6. 参考v8.yml，创建release并将构建产物zip发布
+
