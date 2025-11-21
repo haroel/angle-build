@@ -94,7 +94,7 @@ jobs:
   build-ios:
     name: Build iOS
     needs: create-release
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -112,8 +112,6 @@ jobs:
           cd angle
           echo "Checking out $ANGLE_BRANCH"
           git checkout $ANGLE_BRANCH
-        env:
-          PATH: ${{ github.workspace }}/depot_tools:${{ env.PATH }}
 
       - name: Sync Dependencies
         run: |
@@ -130,8 +128,6 @@ jobs:
           target_os = ["ios"]
           EOF
           gclient sync -D
-        env:
-          PATH: ${{ github.workspace }}/depot_tools:${{ env.PATH }}
 
       - name: Build iOS arm64 (Device)
         run: |
@@ -140,8 +136,6 @@ jobs:
           cp ${{ github.workspace }}/args.ios.arm64.gn out/ios_device/args.gn
           gn gen out/ios_device
           autoninja -C out/ios_device libGLESv2_static libEGL_static
-        env:
-          PATH: ${{ github.workspace }}/depot_tools:${{ env.PATH }}
 
       - name: Build iOS arm64 (Simulator)
         run: |
@@ -150,8 +144,6 @@ jobs:
           cp ${{ github.workspace }}/args.ios.arm64.simulator.gn out/ios_sim/args.gn
           gn gen out/ios_sim
           autoninja -C out/ios_sim libGLESv2_static libEGL_static
-        env:
-          PATH: ${{ github.workspace }}/depot_tools:${{ env.PATH }}
 
       - name: Create XCFramework
         run: |
@@ -165,7 +157,8 @@ jobs:
           mkdir -p headers/EGL
           cp -r include/EGL include/KHR headers/EGL/
           
-          # Create GLESv2.xcframework
+          # Create GLESv2.xcframework (Includes GLES 2.0, 3.0, 3.1)
+          # Note: The library name is historically "libGLESv2" even for GLES 3.x
           xcodebuild -create-xcframework \
             -library out/ios_device/obj/libGLESv2_static.a \
             -headers headers/GLESv2 \
@@ -180,9 +173,6 @@ jobs:
             -library out/ios_sim/obj/libEGL_static.a \
             -headers headers/EGL \
             -output EGL.xcframework
-            
-        env:
-          PATH: ${{ github.workspace }}/depot_tools:${{ env.PATH }}
 
       - name: Zip Artifacts
         run: |
@@ -202,7 +192,7 @@ jobs:
   build-mac:
     name: Build macOS
     needs: create-release
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -220,8 +210,6 @@ jobs:
           cd angle
           echo "Checking out $ANGLE_BRANCH"
           git checkout $ANGLE_BRANCH
-        env:
-          PATH: ${{ github.workspace }}/depot_tools:${{ env.PATH }}
 
       - name: Sync Dependencies
         run: |
@@ -238,8 +226,6 @@ jobs:
           target_os = ["mac"]
           EOF
           gclient sync -D
-        env:
-          PATH: ${{ github.workspace }}/depot_tools:${{ env.PATH }}
 
       - name: Build macOS arm64
         run: |
@@ -248,8 +234,6 @@ jobs:
           cp ${{ github.workspace }}/args.mac.arm64.gn out/mac/args.gn
           gn gen out/mac
           autoninja -C out/mac libGLESv2_static libEGL_static
-        env:
-          PATH: ${{ github.workspace }}/depot_tools:${{ env.PATH }}
 
       - name: Create XCFramework
         run: |
@@ -263,7 +247,8 @@ jobs:
           mkdir -p headers/EGL
           cp -r include/EGL include/KHR headers/EGL/
           
-          # Create GLESv2.xcframework
+          # Create GLESv2.xcframework (Includes GLES 2.0, 3.0, 3.1)
+          # Note: The library name is historically "libGLESv2" even for GLES 3.x
           xcodebuild -create-xcframework \
             -library out/mac/obj/libGLESv2_static.a \
             -headers headers/GLESv2 \
@@ -274,9 +259,6 @@ jobs:
             -library out/mac/obj/libEGL_static.a \
             -headers headers/EGL \
             -output EGL.xcframework
-            
-        env:
-          PATH: ${{ github.workspace }}/depot_tools:${{ env.PATH }}
 
       - name: Zip Artifacts
         run: |
