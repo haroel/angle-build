@@ -1,0 +1,19 @@
+diff --git a/BUILD.gn b/BUILD.gn
+index 34da605d3..f975659cb 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -1595,6 +1595,14 @@ if (angle_enable_vulkan) {
+ 
+ libEGL_template("libEGL_static") {
+   target_type = "angle_static_library"
++  # XCFramework consumers cannot express ANGLE's GN dependency graph. Fold
++  # libEGL, libGLESv2, libANGLE, the Metal renderer and their transitive
++  # dependencies into this one archive.
++  complete_static_lib = true
++  # Chromium enables thin archives globally. They only reference object files
++  # in the build directory and therefore cannot be distributed.
++  suppressed_configs = angle_remove_configs +
++                       [ "//build/config/compiler:thin_archive" ]
+   public_configs = [ ":angle_static_config" ]
+   deps = [ ":libGLESv2_static" ]
+ }

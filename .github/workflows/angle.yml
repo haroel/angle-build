@@ -1,126 +1,130 @@
-name: Build ANGLE Static Libraries
+name: Build and publish ANGLE XCFrameworks
 
 on:
   workflow_dispatch:
     inputs:
-      angle_branch:
-        description: "ANGLE branch or commit to build"
+      angle_ref:
+        description: "ANGLE branch, tag, or commit (the monolithic patch is tested with chromium/7499)"
         required: true
-        default: "chromium/6834"
+        default: "chromium/7499"
+      release_tag:
+        description: "Release tag (empty creates angle-m143-build-<run id>)"
+        required: false
+        default: ""
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
 
+concurrency:
+  group: angle-release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
 env:
-  ANGLE_BRANCH: ${{ github.event.inputs.angle_branch || 'chromium/6834' }}
-  DEPOT_TOOLS_REPO: "https://chromium.googlesource.com/chromium/tools/depot_tools.git"
+  ANGLE_REF: ${{ inputs.angle_ref || 'chromium/7499' }}
+  ANGLE_REPO: https://chromium.googlesource.com/angle/angle.git
+  DEPOT_TOOLS_REPO: https://chromium.googlesource.com/chromium/tools/depot_tools.git
 
 jobs:
   create-release:
-    name: Create Release
+    name: Create draft release
     runs-on: ubuntu-latest
     outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
-      release_id: ${{ steps.create_release.outputs.release_id }}
+      release_id: ${{ steps.release.outputs.release_id }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
     steps:
-      - name: Create GitHub Release
-        id: create_release
+      - name: Create or reuse draft release
+        id: release
         uses: actions/github-script@v7
+        env:
+          REQUESTED_RELEASE_TAG: ${{ inputs.release_tag || '' }}
         with:
           script: |
-            const tag = context.ref.replace('refs/tags/', '');
-            const isTag = context.ref.startsWith('refs/tags/');
-            const branch = process.env.ANGLE_BRANCH;
-            
-            // Determine release tag name
-            let tagName = isTag ? tag : `angle-build-${new Date().toISOString().split('T')[0]}`;
-            let releaseName = isTag ? `Release ${tag}` : `ANGLE Build ${branch}`;
-            
+            const isTagPush = context.ref.startsWith('refs/tags/');
+            const requestedTag = process.env.REQUESTED_RELEASE_TAG.trim();
+            const releaseTag = isTagPush
+              ? context.ref.substring('refs/tags/'.length)
+              : requestedTag || `angle-m143-build-${context.runId}`;
+            const angleRef = process.env.ANGLE_REF;
             const body = [
-              `ANGLE Static Libraries (Branch: ${branch})`,
+              `ANGLE ${angleRef} precompiled static XCFrameworks`,
               '',
-              '**Note: Precompiled static libraries for iOS and macOS (Metal Backend only)**',
-              '- **Backend**: Metal',
-              '- **OpenGL ES Support**: Up to 3.1 (Provided headers include GLES 3.1)',
+              '- Renderer backend: Metal only',
+              '- EGL and OpenGL ES entry points are folded into one complete `libANGLE.a`',
+              '- Debug symbols, tests, capture, Vulkan, OpenGL and unused translators are disabled',
               '',
-              '## artifacts',
+              '## Assets',
               '',
-              '### iOS (XCFramework)',
-              '- `libangle_ios.zip`',
-              '- Contains `angle.xcframework` (arm64 device + arm64 simulator)',
-              '- Libraries: `libGLESv2_static`, `libEGL_static`',
+              '- `ANGLE-iOS.xcframework.zip`: iOS arm64 device + arm64 simulator',
+              '- `ANGLE-macOS.xcframework.zip`: macOS arm64 (Apple Silicon)',
               '',
-              '### macOS (XCFramework)',
-              '- `libangle_mac.zip`',
-              '- Contains `angle.xcframework` (arm64)',
-              '- Libraries: `libGLESv2_static`, `libEGL_static`',
+              'Each ZIP includes the XCFramework, ANGLE license, integration notes,',
+              'source revision, checked-in args.gn and expanded GN arguments.',
+              '',
+              '**Download the ZIP assets below; do not use GitHub source archives as binaries.**'
             ].join('\n');
-            
-            let release;
-            try {
-              // Check if release exists (for re-runs on same tag)
-              try {
-                 release = await github.rest.repos.getReleaseByTag({
-                   owner: context.repo.owner,
-                   repo: context.repo.repo,
-                   tag: tagName
-                 });
-                 release = release.data;
-              } catch (e) {
-                 // Not found, create new
-                 release = await github.rest.repos.createRelease({
-                   owner: context.repo.owner,
-                   repo: context.repo.repo,
-                   tag_name: tagName,
-                   name: releaseName,
-                   draft: true,
-                   prerelease: false,
-                   body: body,
-                   target_commitish: context.sha
-                 }).then(r => r.data);
-              }
-            } catch (error) {
-              console.error('Error creating/getting release:', error);
-              throw error;
+
+            const releases = await github.paginate(github.rest.repos.listReleases, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            });
+            let release = releases.find(item => item.tag_name === releaseTag);
+
+            if (!release) {
+              const result = await github.rest.repos.createRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag_name: releaseTag,
+                target_commitish: context.sha,
+                name: `ANGLE ${angleRef} (${releaseTag})`,
+                body,
+                draft: true,
+                prerelease: false
+              });
+              release = result.data;
+            } else {
+              await github.rest.repos.updateRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release.id,
+                name: `ANGLE ${angleRef} (${releaseTag})`,
+                body
+              });
             }
-            
-            core.setOutput('upload_url', release.upload_url);
-            core.setOutput('release_id', release.id);
-            return release;
+
+            core.setOutput('release_id', String(release.id));
+            core.setOutput('release_tag', releaseTag);
 
   build-ios:
-    if: false
-    name: Build iOS
+    name: Build iOS XCFramework
     needs: create-release
     runs-on: macos-15
+    timeout-minutes: 180
     steps:
-      - name: Checkout
+      - name: Checkout packaging repository
         uses: actions/checkout@v4
 
-      - name: Setup Depot Tools
+      - name: Install depot_tools
         run: |
-          git clone $DEPOT_TOOLS_REPO depot_tools
-          echo "$PWD/depot_tools" >> $GITHUB_PATH
+          git clone --depth 1 "$DEPOT_TOOLS_REPO" depot_tools
+          echo "$GITHUB_WORKSPACE/depot_tools" >> "$GITHUB_PATH"
 
-      - name: Checkout ANGLE
+      - name: Checkout ANGLE and dependencies
         run: |
-          # Xcode 16 (macos-16 image) has Metal Toolchain unbundled
-          # We need to ensure it's available or use an older image if problematic
-          # For now, try installing it if missing, though on CI this might be tricky
-          # Alternatively, use macos-15 which is more stable with Xcode 15
-          
-          # Try to install Metal Toolchain if missing
-          echo "Attempting to install Metal Toolchain..."
-          sudo xcodebuild -downloadComponent MetalToolchain || echo "Metal Toolchain download failed or not needed (might require Apple ID or already installed)"
-          
-          mkdir angle_src
-          cd angle_src
-          
-          # Configure gclient manually to avoid fetch issues
-          cat > .gclient << 'EOF'
+          mkdir -p angle-src/angle
+          git -C angle-src/angle init
+          git -C angle-src/angle remote add origin "$ANGLE_REPO"
+          git -C angle-src/angle fetch --depth 1 origin "$ANGLE_REF"
+          git -C angle-src/angle checkout --detach FETCH_HEAD
+
+          cat > angle-src/.gclient <<'GCLIENT'
           solutions = [
             {
               "name": "angle",
@@ -130,112 +134,128 @@ jobs:
             },
           ]
           target_os = ["ios"]
-          EOF
-          
-          # Sync code
-          gclient sync -D
-          
-          cd angle
-          echo "Checking out $ANGLE_BRANCH"
-          git checkout $ANGLE_BRANCH
-          
-          # Sync dependencies for specific branch
-          gclient sync -D
+          GCLIENT
 
-      - name: Build iOS arm64 (Device)
-        run: |
-          cd angle_src/angle
-          mkdir -p out/ios_device
-          cp ${{ github.workspace }}/args.ios.arm64.gn out/ios_device/args.gn
-          gn gen out/ios_device
-          autoninja -C out/ios_device libGLESv2_static libEGL_static
+          cd angle-src
+          gclient sync -D --no-history --force --reset
 
-      - name: Build iOS arm64 (Simulator)
+      - name: Make the ANGLE archive self-contained
         run: |
-          cd angle_src/angle
-          mkdir -p out/ios_sim
-          cp ${{ github.workspace }}/args.ios.arm64.simulator.gn out/ios_sim/args.gn
-          gn gen out/ios_sim
-          autoninja -C out/ios_sim libGLESv2_static libEGL_static
+          cd angle-src/angle
+          git apply --check "$GITHUB_WORKSPACE/patches/angle-complete-static-library.patch"
+          git apply "$GITHUB_WORKSPACE/patches/angle-complete-static-library.patch"
 
-      - name: Create XCFramework
+      - name: Build iOS device
         run: |
-          cd angle_src/angle
-          
-          # Prepare headers
-          mkdir -p headers/GLESv2
-          # Copy GLES headers (GLES2, GLES3 which includes gl31.h)
-          cp -r include/GLES2 include/GLES3 include/KHR headers/GLESv2/
-          
-          mkdir -p headers/EGL
-          cp -r include/EGL include/KHR headers/EGL/
-          
-          # Create GLESv2.xcframework (Includes GLES 2.0, 3.0, 3.1)
-          # Ensure libraries are full archives (not thin archives)
-          # We use 'cp' because GN is configured to produce full archives with is_component_build=false
-          # If it's still thin, we might need 'ar' but let's try avoiding libtool re-pack first
-          # as libtool complains about thin archives as input.
-          
-          # Note: The library name is historically "libGLESv2" even for GLES 3.x
+          cd angle-src/angle
+          mkdir -p out/ios-device
+          cp "$GITHUB_WORKSPACE/args.ios.arm64.gn" out/ios-device/args.gn
+          gn gen out/ios-device
+          autoninja -C out/ios-device libEGL_static
+          gn args out/ios-device --list > out/ios-device/args.full.txt
+          test -f out/ios-device/obj/libEGL_static.a
+          ! file out/ios-device/obj/libEGL_static.a | grep -q 'thin archive'
+
+      - name: Build iOS simulator
+        run: |
+          cd angle-src/angle
+          mkdir -p out/ios-simulator
+          cp "$GITHUB_WORKSPACE/args.ios.arm64.simulator.gn" out/ios-simulator/args.gn
+          gn gen out/ios-simulator
+          autoninja -C out/ios-simulator libEGL_static
+          gn args out/ios-simulator --list > out/ios-simulator/args.full.txt
+          test -f out/ios-simulator/obj/libEGL_static.a
+          ! file out/ios-simulator/obj/libEGL_static.a | grep -q 'thin archive'
+
+      - name: Create and verify XCFramework
+        run: |
+          cd angle-src/angle
+          mkdir -p staging/Headers staging/device staging/simulator dist/ANGLE-iOS/build-config
+          cp -R include/EGL include/GLES2 include/GLES3 include/KHR staging/Headers/
+          cp out/ios-device/obj/libEGL_static.a staging/device/libANGLE.a
+          cp out/ios-simulator/obj/libEGL_static.a staging/simulator/libANGLE.a
+
           xcodebuild -create-xcframework \
-            -library out/ios_device/obj/libGLESv2_static.a \
-            -headers headers/GLESv2 \
-            -library out/ios_sim/obj/libGLESv2_static.a \
-            -headers headers/GLESv2 \
-            -output GLESv2.xcframework
+            -library staging/device/libANGLE.a \
+            -headers staging/Headers \
+            -library staging/simulator/libANGLE.a \
+            -headers staging/Headers \
+            -output dist/ANGLE-iOS/ANGLE.xcframework
 
-          # Create EGL.xcframework
-          xcodebuild -create-xcframework \
-            -library out/ios_device/obj/libEGL_static.a \
-            -headers headers/EGL \
-            -library out/ios_sim/obj/libEGL_static.a \
-            -headers headers/EGL \
-            -output EGL.xcframework
+          nm -gU staging/device/libANGLE.a | grep -q '_eglGetDisplay$'
+          nm -gU staging/device/libANGLE.a | grep -q '_glClear$'
+          test "$(lipo -archs staging/device/libANGLE.a)" = "arm64"
+          test "$(lipo -archs staging/simulator/libANGLE.a)" = "arm64"
+          plutil -lint dist/ANGLE-iOS/ANGLE.xcframework/Info.plist
+          plutil -p dist/ANGLE-iOS/ANGLE.xcframework/Info.plist | grep -q 'simulator'
 
-      - name: Zip Artifacts
-        run: |
-          cd angle_src/angle
-          zip -r libangle_ios.zip GLESv2.xcframework EGL.xcframework
-          
-      - name: Upload Assets
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+          xcrun --sdk iphonesimulator clang++ \
+            -std=c++20 -target arm64-apple-ios12.0-simulator \
+            -x objective-c++ -I staging/Headers -c -o staging/smoke.o - <<'SOURCE'
+          #include <EGL/egl.h>
+          #include <GLES2/gl2.h>
+          int main() {
+              EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+              glClear(GL_COLOR_BUFFER_BIT);
+              return display == EGL_NO_DISPLAY;
+          }
+          SOURCE
+          xcrun --sdk iphonesimulator clang++ \
+            -target arm64-apple-ios12.0-simulator \
+            staging/smoke.o staging/simulator/libANGLE.a -ObjC \
+            -framework Metal -framework QuartzCore -framework IOSurface \
+            -framework Foundation -framework CoreFoundation \
+            -framework CoreGraphics \
+            -o staging/angle-link-smoke
+
+          cp LICENSE dist/ANGLE-iOS/
+          cp "$GITHUB_WORKSPACE/PACKAGE_README.md" dist/ANGLE-iOS/README.md
+          cp out/ios-device/args.gn dist/ANGLE-iOS/build-config/args.ios.arm64.gn
+          cp out/ios-device/args.full.txt dist/ANGLE-iOS/build-config/args.ios.arm64.full.txt
+          cp out/ios-simulator/args.gn dist/ANGLE-iOS/build-config/args.ios.arm64.simulator.gn
+          cp out/ios-simulator/args.full.txt dist/ANGLE-iOS/build-config/args.ios.arm64.simulator.full.txt
+          {
+            echo "ANGLE_REF=$ANGLE_REF"
+            echo "ANGLE_COMMIT=$(git rev-parse HEAD)"
+            echo "XCODE_VERSION=$(xcodebuild -version | tr '\n' ' ')"
+          } > dist/ANGLE-iOS/build-config/BUILD_INFO.txt
+
+          ditto -c -k --sequesterRsrc --keepParent \
+            dist/ANGLE-iOS "$GITHUB_WORKSPACE/ANGLE-iOS.xcframework.zip"
+          ls -lh "$GITHUB_WORKSPACE/ANGLE-iOS.xcframework.zip"
+
+      - name: Upload iOS package to workflow artifacts
+        uses: actions/upload-artifact@v4
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: angle_src/angle/libangle_ios.zip
-          asset_name: libangle_ios.zip
-          asset_content_type: application/zip
+          name: angle-ios-release
+          path: ANGLE-iOS.xcframework.zip
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
 
-  build-mac:
-    name: Build macOS
+  build-macos:
+    name: Build macOS XCFramework
     needs: create-release
     runs-on: macos-15
+    timeout-minutes: 180
     steps:
-      - name: Checkout
+      - name: Checkout packaging repository
         uses: actions/checkout@v4
 
-      - name: Setup Depot Tools
+      - name: Install depot_tools
         run: |
-          git clone $DEPOT_TOOLS_REPO depot_tools
-          echo "$PWD/depot_tools" >> $GITHUB_PATH
+          git clone --depth 1 "$DEPOT_TOOLS_REPO" depot_tools
+          echo "$GITHUB_WORKSPACE/depot_tools" >> "$GITHUB_PATH"
 
-      - name: Checkout ANGLE
+      - name: Checkout ANGLE and dependencies
         run: |
-          # Xcode 16 (macos-16 image) has Metal Toolchain unbundled
-          # We need to ensure it's available or use an older image if problematic
-          # For now, try installing it if missing, though on CI this might be tricky
-          # Alternatively, use macos-15 which is more stable with Xcode 15
-          
-          # Try to install Metal Toolchain if missing
-          echo "Attempting to install Metal Toolchain..."
-          sudo xcodebuild -downloadComponent MetalToolchain || echo "Metal Toolchain download failed or not needed (might require Apple ID or already installed)"
-          
-          mkdir angle_src
-          cd angle_src
-          
-          # Configure gclient manually to avoid fetch issues
-          cat > .gclient << 'EOF'
+          mkdir -p angle-src/angle
+          git -C angle-src/angle init
+          git -C angle-src/angle remote add origin "$ANGLE_REPO"
+          git -C angle-src/angle fetch --depth 1 origin "$ANGLE_REF"
+          git -C angle-src/angle checkout --detach FETCH_HEAD
+
+          cat > angle-src/.gclient <<'GCLIENT'
           solutions = [
             {
               "name": "angle",
@@ -245,79 +265,127 @@ jobs:
             },
           ]
           target_os = ["mac"]
-          EOF
-          
-          # Sync code
-          gclient sync -D
-          
-          cd angle
-          echo "Checking out $ANGLE_BRANCH"
-          git checkout $ANGLE_BRANCH
-          
-          # Sync dependencies for specific branch
-          gclient sync -D
+          GCLIENT
+
+          cd angle-src
+          gclient sync -D --no-history --force --reset
+
+      - name: Make the ANGLE archive self-contained
+        run: |
+          cd angle-src/angle
+          git apply --check "$GITHUB_WORKSPACE/patches/angle-complete-static-library.patch"
+          git apply "$GITHUB_WORKSPACE/patches/angle-complete-static-library.patch"
+
+      - name: Ensure the Metal compiler is available
+        run: |
+          metal_test_dir=$(mktemp -d)
+          printf '%s\n' 'using namespace metal; kernel void empty_kernel() {}' > "$metal_test_dir/test.metal"
+          if ! xcrun -sdk macosx metal -c "$metal_test_dir/test.metal" -o "$metal_test_dir/test.air"; then
+            sudo xcodebuild -downloadComponent MetalToolchain
+            xcrun -sdk macosx metal -c "$metal_test_dir/test.metal" -o "$metal_test_dir/test.air"
+          fi
 
       - name: Build macOS arm64
         run: |
-          cd angle_src/angle
-          mkdir -p out/mac
-          cp ${{ github.workspace }}/args.mac.arm64.gn out/mac/args.gn
-          gn gen out/mac
-          autoninja -C out/mac libGLESv2_static libEGL_static
+          cd angle-src/angle
+          mkdir -p out/macos-arm64
+          cp "$GITHUB_WORKSPACE/args.mac.arm64.gn" out/macos-arm64/args.gn
+          gn gen out/macos-arm64
+          autoninja -C out/macos-arm64 libEGL_static
+          gn args out/macos-arm64 --list > out/macos-arm64/args.full.txt
+          test -f out/macos-arm64/obj/libEGL_static.a
+          ! file out/macos-arm64/obj/libEGL_static.a | grep -q 'thin archive'
 
-      - name: Create XCFramework
+      - name: Create and verify XCFramework
         run: |
-          cd angle_src/angle
-          
-          # Prepare headers
-          mkdir -p headers/GLESv2
-          # Copy GLES headers (GLES2, GLES3 which includes gl31.h)
-          cp -r include/GLES2 include/GLES3 include/KHR headers/GLESv2/
-          
-          mkdir -p headers/EGL
-          cp -r include/EGL include/KHR headers/EGL/
-          
-          # Create GLESv2.xcframework (Includes GLES 2.0, 3.0, 3.1)
-          # Note: The library name is historically "libGLESv2" even for GLES 3.x
-          xcodebuild -create-xcframework \
-            -library out/mac/obj/libGLESv2_static.a \
-            -headers headers/GLESv2 \
-            -output GLESv2.xcframework
+          cd angle-src/angle
+          mkdir -p staging/Headers staging/macos-arm64 dist/ANGLE-macOS/build-config
+          cp -R include/EGL include/GLES2 include/GLES3 include/KHR staging/Headers/
+          cp out/macos-arm64/obj/libEGL_static.a staging/macos-arm64/libANGLE.a
 
-          # Create EGL.xcframework
           xcodebuild -create-xcframework \
-            -library out/mac/obj/libEGL_static.a \
-            -headers headers/EGL \
-            -output EGL.xcframework
+            -library staging/macos-arm64/libANGLE.a \
+            -headers staging/Headers \
+            -output dist/ANGLE-macOS/ANGLE.xcframework
 
-      - name: Zip Artifacts
-        run: |
-          cd angle_src/angle
-          zip -r libangle_mac.zip GLESv2.xcframework EGL.xcframework
-          
-      - name: Upload Assets
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+          nm -gU staging/macos-arm64/libANGLE.a | grep -q '_eglGetDisplay$'
+          nm -gU staging/macos-arm64/libANGLE.a | grep -q '_glClear$'
+          test "$(lipo -archs staging/macos-arm64/libANGLE.a)" = "arm64"
+          plutil -lint dist/ANGLE-macOS/ANGLE.xcframework/Info.plist
+          plutil -p dist/ANGLE-macOS/ANGLE.xcframework/Info.plist | grep -q 'macos'
+
+          xcrun clang++ -std=c++20 -x objective-c++ -I staging/Headers \
+            -c -o staging/smoke.o - <<'SOURCE'
+          #include <EGL/egl.h>
+          #include <GLES2/gl2.h>
+          int main() {
+              EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+              glClear(GL_COLOR_BUFFER_BIT);
+              return display == EGL_NO_DISPLAY;
+          }
+          SOURCE
+          xcrun clang++ staging/smoke.o staging/macos-arm64/libANGLE.a -ObjC \
+            -framework Metal -framework QuartzCore -framework IOSurface \
+            -framework Foundation -framework CoreFoundation \
+            -framework CoreGraphics -framework Cocoa -framework IOKit \
+            -o staging/angle-link-smoke
+
+          cp LICENSE dist/ANGLE-macOS/
+          cp "$GITHUB_WORKSPACE/PACKAGE_README.md" dist/ANGLE-macOS/README.md
+          cp out/macos-arm64/args.gn dist/ANGLE-macOS/build-config/args.mac.arm64.gn
+          cp out/macos-arm64/args.full.txt dist/ANGLE-macOS/build-config/args.mac.arm64.full.txt
+          {
+            echo "ANGLE_REF=$ANGLE_REF"
+            echo "ANGLE_COMMIT=$(git rev-parse HEAD)"
+            echo "XCODE_VERSION=$(xcodebuild -version | tr '\n' ' ')"
+          } > dist/ANGLE-macOS/build-config/BUILD_INFO.txt
+
+          ditto -c -k --sequesterRsrc --keepParent \
+            dist/ANGLE-macOS "$GITHUB_WORKSPACE/ANGLE-macOS.xcframework.zip"
+          ls -lh "$GITHUB_WORKSPACE/ANGLE-macOS.xcframework.zip"
+
+      - name: Upload macOS package to workflow artifacts
+        uses: actions/upload-artifact@v4
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: angle_src/angle/libangle_mac.zip
-          asset_name: libangle_mac.zip
-          asset_content_type: application/zip
+          name: angle-macos-release
+          path: ANGLE-macOS.xcframework.zip
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
 
   publish-release:
-    name: Publish Release
-    needs: [build-ios, build-mac]
+    name: Upload assets and publish release
+    needs: [create-release, build-ios, build-macos]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/github-script@v7
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: angle-*-release
+          path: release-assets
+          merge-multiple: true
+
+      - name: Upload ZIP assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.create-release.outputs.release_tag }}
+        run: |
+          shopt -s nullglob
+          assets=(release-assets/*.zip)
+          test "${#assets[@]}" -eq 2
+          gh release upload "$RELEASE_TAG" "${assets[@]}" \
+            --clobber \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Publish release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         with:
           script: |
-            const release_id = ${{ needs.create-release.outputs.release_id }};
             await github.rest.repos.updateRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              release_id: release_id,
+              release_id: Number(process.env.RELEASE_ID),
               draft: false
             });
-

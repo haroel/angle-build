@@ -1,20 +1,53 @@
+# iOS Simulator (arm64), release, Metal-only.
 target_os = "ios"
 target_cpu = "arm64"
 target_environment = "simulator"
-is_component_build = false
+ios_deployment_target = "12.0"
+
 is_debug = false
-angle_enable_metal = true
-angle_enable_gl = false
-angle_enable_vulkan = false
-angle_enable_null = false
-angle_enable_d3d9 = false
-angle_enable_d3d11 = false
-angle_enable_essl = true
-angle_enable_glsl = true
+is_component_build = false
+is_official_build = false
+symbol_level = 0
+enable_dsyms = false
+exclude_unwind_tables = true
+use_thin_lto = false
+clang_embed_bitcode = false
+use_custom_libcxx = false
+use_custom_libcxx_for_host = false
+treat_warnings_as_errors = false
+use_system_xcode = true
+ios_enable_code_signing = false
+
 angle_build_all = false
 angle_build_tests = false
-angle_build_samples = false
-symbol_level = 0
-ios_enable_code_signing = false
-enable_ios_bitcode = false
-use_thin_lto = false
+angle_enable_commit_id = false
+angle_delegate_workers = false
+angle_enable_abseil = false
+
+# Keep Metal as the only renderer backend.
+angle_enable_metal = true
+angle_enable_vulkan = false
+angle_enable_gl = false
+angle_enable_gl_desktop_backend = false
+angle_enable_cgl = false
+angle_enable_d3d9 = false
+angle_enable_d3d11 = false
+angle_enable_null = false
+angle_enable_wgpu = false
+angle_enable_swiftshader = false
+angle_enable_cl = false
+angle_enable_cl_passthrough = false
+
+# Remove translator/debug features which are not used by the Metal backend.
+angle_enable_hlsl = false
+angle_enable_essl = false
+angle_enable_glsl = false
+angle_enable_trace = false
+angle_enable_platform_trace_events = false
+angle_enable_overlay = false
+angle_enable_perf_counter_output = false
+angle_build_vulkan_system_info = false
+angle_has_astc_encoder = false
+angle_has_histograms = false
+angle_has_rapidjson = false
+angle_has_frame_capture = false
