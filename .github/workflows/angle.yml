@@ -154,7 +154,8 @@ jobs:
           autoninja -C out/ios-device libEGL_static
           gn args out/ios-device --list > out/ios-device/args.full.txt
           test -f out/ios-device/obj/libEGL_static.a
-          ! file out/ios-device/obj/libEGL_static.a | grep -q 'thin archive'
+          archive_type="$(file out/ios-device/obj/libEGL_static.a)"
+          [[ "$archive_type" != *"thin archive"* ]]
 
       - name: Build iOS simulator
         run: |
@@ -165,7 +166,8 @@ jobs:
           autoninja -C out/ios-simulator libEGL_static
           gn args out/ios-simulator --list > out/ios-simulator/args.full.txt
           test -f out/ios-simulator/obj/libEGL_static.a
-          ! file out/ios-simulator/obj/libEGL_static.a | grep -q 'thin archive'
+          archive_type="$(file out/ios-simulator/obj/libEGL_static.a)"
+          [[ "$archive_type" != *"thin archive"* ]]
 
       - name: Create and verify XCFramework
         run: |
@@ -182,12 +184,14 @@ jobs:
             -headers staging/Headers \
             -output dist/ANGLE-iOS/ANGLE.xcframework
 
-          nm -gU staging/device/libANGLE.a | grep -q '_eglGetDisplay$'
-          nm -gU staging/device/libANGLE.a | grep -q '_glClear$'
+          nm -gU staging/device/libANGLE.a > staging/device/symbols.txt
+          grep -q '_eglGetDisplay$' staging/device/symbols.txt
+          grep -q '_glClear$' staging/device/symbols.txt
           test "$(lipo -archs staging/device/libANGLE.a)" = "arm64"
           test "$(lipo -archs staging/simulator/libANGLE.a)" = "arm64"
           plutil -lint dist/ANGLE-iOS/ANGLE.xcframework/Info.plist
-          plutil -p dist/ANGLE-iOS/ANGLE.xcframework/Info.plist | grep -q 'simulator'
+          plutil -p dist/ANGLE-iOS/ANGLE.xcframework/Info.plist > staging/ios-xcframework-info.txt
+          grep -q 'simulator' staging/ios-xcframework-info.txt
 
           xcrun --sdk iphonesimulator clang++ \
             -std=c++20 -target arm64-apple-ios12.0-simulator \
@@ -294,7 +298,8 @@ jobs:
           autoninja -C out/macos-arm64 libEGL_static
           gn args out/macos-arm64 --list > out/macos-arm64/args.full.txt
           test -f out/macos-arm64/obj/libEGL_static.a
-          ! file out/macos-arm64/obj/libEGL_static.a | grep -q 'thin archive'
+          archive_type="$(file out/macos-arm64/obj/libEGL_static.a)"
+          [[ "$archive_type" != *"thin archive"* ]]
 
       - name: Create and verify XCFramework
         run: |
@@ -308,11 +313,13 @@ jobs:
             -headers staging/Headers \
             -output dist/ANGLE-macOS/ANGLE.xcframework
 
-          nm -gU staging/macos-arm64/libANGLE.a | grep -q '_eglGetDisplay$'
-          nm -gU staging/macos-arm64/libANGLE.a | grep -q '_glClear$'
+          nm -gU staging/macos-arm64/libANGLE.a > staging/macos-arm64/symbols.txt
+          grep -q '_eglGetDisplay$' staging/macos-arm64/symbols.txt
+          grep -q '_glClear$' staging/macos-arm64/symbols.txt
           test "$(lipo -archs staging/macos-arm64/libANGLE.a)" = "arm64"
           plutil -lint dist/ANGLE-macOS/ANGLE.xcframework/Info.plist
-          plutil -p dist/ANGLE-macOS/ANGLE.xcframework/Info.plist | grep -q 'macos'
+          plutil -p dist/ANGLE-macOS/ANGLE.xcframework/Info.plist > staging/macos-xcframework-info.txt
+          grep -q 'macos' staging/macos-xcframework-info.txt
 
           xcrun clang++ -std=c++20 -x objective-c++ -I staging/Headers \
             -c -o staging/smoke.o - <<'SOURCE'
