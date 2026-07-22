@@ -61,10 +61,9 @@ jobs:
               '',
               '## Assets',
               '',
-              '- `ANGLE-iOS.xcframework.zip`: iOS arm64 device + arm64 simulator',
-              '- `ANGLE-macOS.xcframework.zip`: macOS arm64 (Apple Silicon)',
+              '- `ANGLE.xcframework.zip`: iOS arm64 device, arm64 simulator, and macOS arm64',
               '',
-              'Each ZIP includes the XCFramework, ANGLE license, integration notes,',
+              'The ZIP includes the unified XCFramework, ANGLE license, integration notes,',
               'source revision, checked-in args.gn and expanded GN arguments.',
               '',
               '**Download the ZIP assets below; do not use GitHub source archives as binaries.**'
@@ -103,7 +102,7 @@ jobs:
             core.setOutput('release_tag', releaseTag);
 
   build-ios:
-    name: Build iOS XCFramework
+    name: Build iOS slices
     needs: create-release
     runs-on: macos-15
     timeout-minutes: 180
@@ -169,33 +168,25 @@ jobs:
           archive_type="$(file out/ios-simulator/obj/libEGL_static.a)"
           [[ "$archive_type" != *"thin archive"* ]]
 
-      - name: Create and verify XCFramework
+      - name: Verify and stage iOS slices
         run: |
           cd angle-src/angle
-          mkdir -p staging/Headers staging/device staging/simulator dist/ANGLE-iOS/build-config
-          cp -R include/EGL include/GLES2 include/GLES3 include/KHR staging/Headers/
-          cp out/ios-device/obj/libEGL_static.a staging/device/libANGLE.a
-          cp out/ios-simulator/obj/libEGL_static.a staging/simulator/libANGLE.a
+          slice_root=dist/angle-ios-slices
+          mkdir -p "$slice_root/Headers" "$slice_root/device" \
+            "$slice_root/simulator" "$slice_root/build-config" staging
+          cp -R include/EGL include/GLES2 include/GLES3 include/KHR "$slice_root/Headers/"
+          cp out/ios-device/obj/libEGL_static.a "$slice_root/device/libANGLE.a"
+          cp out/ios-simulator/obj/libEGL_static.a "$slice_root/simulator/libANGLE.a"
 
-          xcodebuild -create-xcframework \
-            -library staging/device/libANGLE.a \
-            -headers staging/Headers \
-            -library staging/simulator/libANGLE.a \
-            -headers staging/Headers \
-            -output dist/ANGLE-iOS/ANGLE.xcframework
-
-          nm -gU staging/device/libANGLE.a > staging/device/symbols.txt
-          grep -q '_eglGetDisplay$' staging/device/symbols.txt
-          grep -q '_glClear$' staging/device/symbols.txt
-          test "$(lipo -archs staging/device/libANGLE.a)" = "arm64"
-          test "$(lipo -archs staging/simulator/libANGLE.a)" = "arm64"
-          plutil -lint dist/ANGLE-iOS/ANGLE.xcframework/Info.plist
-          plutil -p dist/ANGLE-iOS/ANGLE.xcframework/Info.plist > staging/ios-xcframework-info.txt
-          grep -q 'simulator' staging/ios-xcframework-info.txt
+          nm -gU "$slice_root/device/libANGLE.a" > staging/device-symbols.txt
+          grep -q '_eglGetDisplay$' staging/device-symbols.txt
+          grep -q '_glClear$' staging/device-symbols.txt
+          test "$(lipo -archs "$slice_root/device/libANGLE.a")" = "arm64"
+          test "$(lipo -archs "$slice_root/simulator/libANGLE.a")" = "arm64"
 
           xcrun --sdk iphonesimulator clang++ \
             -std=c++20 -target arm64-apple-ios12.0-simulator \
-            -x objective-c++ -I staging/Headers -c -o staging/smoke.o - <<'SOURCE'
+            -x objective-c++ -I "$slice_root/Headers" -c -o staging/smoke.o - <<'SOURCE'
           #include <EGL/egl.h>
           #include <GLES2/gl2.h>
           int main() {
@@ -206,39 +197,34 @@ jobs:
           SOURCE
           xcrun --sdk iphonesimulator clang++ \
             -target arm64-apple-ios12.0-simulator \
-            staging/smoke.o staging/simulator/libANGLE.a -ObjC \
+            staging/smoke.o "$slice_root/simulator/libANGLE.a" -ObjC \
             -framework Metal -framework QuartzCore -framework IOSurface \
             -framework Foundation -framework CoreFoundation \
             -framework CoreGraphics \
             -o staging/angle-link-smoke
 
-          cp LICENSE dist/ANGLE-iOS/
-          cp "$GITHUB_WORKSPACE/PACKAGE_README.md" dist/ANGLE-iOS/README.md
-          cp out/ios-device/args.gn dist/ANGLE-iOS/build-config/args.ios.arm64.gn
-          cp out/ios-device/args.full.txt dist/ANGLE-iOS/build-config/args.ios.arm64.full.txt
-          cp out/ios-simulator/args.gn dist/ANGLE-iOS/build-config/args.ios.arm64.simulator.gn
-          cp out/ios-simulator/args.full.txt dist/ANGLE-iOS/build-config/args.ios.arm64.simulator.full.txt
+          cp LICENSE "$slice_root/"
+          cp out/ios-device/args.gn "$slice_root/build-config/args.ios.arm64.gn"
+          cp out/ios-device/args.full.txt "$slice_root/build-config/args.ios.arm64.full.txt"
+          cp out/ios-simulator/args.gn "$slice_root/build-config/args.ios.arm64.simulator.gn"
+          cp out/ios-simulator/args.full.txt "$slice_root/build-config/args.ios.arm64.simulator.full.txt"
           {
             echo "ANGLE_REF=$ANGLE_REF"
             echo "ANGLE_COMMIT=$(git rev-parse HEAD)"
             echo "XCODE_VERSION=$(xcodebuild -version | tr '\n' ' ')"
-          } > dist/ANGLE-iOS/build-config/BUILD_INFO.txt
+          } > "$slice_root/build-config/BUILD_INFO.ios.txt"
 
-          ditto -c -k --sequesterRsrc --keepParent \
-            dist/ANGLE-iOS "$GITHUB_WORKSPACE/ANGLE-iOS.xcframework.zip"
-          ls -lh "$GITHUB_WORKSPACE/ANGLE-iOS.xcframework.zip"
-
-      - name: Upload iOS package to workflow artifacts
+      - name: Upload iOS slices
         uses: actions/upload-artifact@v4
         with:
-          name: angle-ios-release
-          path: ANGLE-iOS.xcframework.zip
+          name: angle-ios-slices
+          path: angle-src/angle/dist/angle-ios-slices/
           compression-level: 0
           retention-days: 7
           if-no-files-found: error
 
   build-macos:
-    name: Build macOS XCFramework
+    name: Build macOS slice
     needs: create-release
     runs-on: macos-15
     timeout-minutes: 180
@@ -301,27 +287,21 @@ jobs:
           archive_type="$(file out/macos-arm64/obj/libEGL_static.a)"
           [[ "$archive_type" != *"thin archive"* ]]
 
-      - name: Create and verify XCFramework
+      - name: Verify and stage macOS slice
         run: |
           cd angle-src/angle
-          mkdir -p staging/Headers staging/macos-arm64 dist/ANGLE-macOS/build-config
-          cp -R include/EGL include/GLES2 include/GLES3 include/KHR staging/Headers/
-          cp out/macos-arm64/obj/libEGL_static.a staging/macos-arm64/libANGLE.a
+          slice_root=dist/angle-macos-slice
+          mkdir -p "$slice_root/Headers" "$slice_root/macos-arm64" \
+            "$slice_root/build-config" staging
+          cp -R include/EGL include/GLES2 include/GLES3 include/KHR "$slice_root/Headers/"
+          cp out/macos-arm64/obj/libEGL_static.a "$slice_root/macos-arm64/libANGLE.a"
 
-          xcodebuild -create-xcframework \
-            -library staging/macos-arm64/libANGLE.a \
-            -headers staging/Headers \
-            -output dist/ANGLE-macOS/ANGLE.xcframework
+          nm -gU "$slice_root/macos-arm64/libANGLE.a" > staging/macos-symbols.txt
+          grep -q '_eglGetDisplay$' staging/macos-symbols.txt
+          grep -q '_glClear$' staging/macos-symbols.txt
+          test "$(lipo -archs "$slice_root/macos-arm64/libANGLE.a")" = "arm64"
 
-          nm -gU staging/macos-arm64/libANGLE.a > staging/macos-arm64/symbols.txt
-          grep -q '_eglGetDisplay$' staging/macos-arm64/symbols.txt
-          grep -q '_glClear$' staging/macos-arm64/symbols.txt
-          test "$(lipo -archs staging/macos-arm64/libANGLE.a)" = "arm64"
-          plutil -lint dist/ANGLE-macOS/ANGLE.xcframework/Info.plist
-          plutil -p dist/ANGLE-macOS/ANGLE.xcframework/Info.plist > staging/macos-xcframework-info.txt
-          grep -q 'macos' staging/macos-xcframework-info.txt
-
-          xcrun clang++ -std=c++20 -x objective-c++ -I staging/Headers \
+          xcrun clang++ -std=c++20 -x objective-c++ -I "$slice_root/Headers" \
             -c -o staging/smoke.o - <<'SOURCE'
           #include <EGL/egl.h>
           #include <GLES2/gl2.h>
@@ -331,46 +311,101 @@ jobs:
               return display == EGL_NO_DISPLAY;
           }
           SOURCE
-          xcrun clang++ staging/smoke.o staging/macos-arm64/libANGLE.a -ObjC \
+          xcrun clang++ staging/smoke.o "$slice_root/macos-arm64/libANGLE.a" -ObjC \
             -framework Metal -framework QuartzCore -framework IOSurface \
             -framework Foundation -framework CoreFoundation \
             -framework CoreGraphics -framework Cocoa -framework IOKit \
             -o staging/angle-link-smoke
 
-          cp LICENSE dist/ANGLE-macOS/
-          cp "$GITHUB_WORKSPACE/PACKAGE_README.md" dist/ANGLE-macOS/README.md
-          cp out/macos-arm64/args.gn dist/ANGLE-macOS/build-config/args.mac.arm64.gn
-          cp out/macos-arm64/args.full.txt dist/ANGLE-macOS/build-config/args.mac.arm64.full.txt
+          cp LICENSE "$slice_root/"
+          cp out/macos-arm64/args.gn "$slice_root/build-config/args.mac.arm64.gn"
+          cp out/macos-arm64/args.full.txt "$slice_root/build-config/args.mac.arm64.full.txt"
           {
             echo "ANGLE_REF=$ANGLE_REF"
             echo "ANGLE_COMMIT=$(git rev-parse HEAD)"
             echo "XCODE_VERSION=$(xcodebuild -version | tr '\n' ' ')"
-          } > dist/ANGLE-macOS/build-config/BUILD_INFO.txt
+          } > "$slice_root/build-config/BUILD_INFO.macos.txt"
 
-          ditto -c -k --sequesterRsrc --keepParent \
-            dist/ANGLE-macOS "$GITHUB_WORKSPACE/ANGLE-macOS.xcframework.zip"
-          ls -lh "$GITHUB_WORKSPACE/ANGLE-macOS.xcframework.zip"
-
-      - name: Upload macOS package to workflow artifacts
+      - name: Upload macOS slice
         uses: actions/upload-artifact@v4
         with:
-          name: angle-macos-release
-          path: ANGLE-macOS.xcframework.zip
+          name: angle-macos-slice
+          path: angle-src/angle/dist/angle-macos-slice/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+
+  merge-xcframework:
+    name: Merge unified XCFramework
+    needs: [create-release, build-ios, build-macos]
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout packaging repository
+        uses: actions/checkout@v4
+
+      - name: Download iOS slices
+        uses: actions/download-artifact@v4
+        with:
+          name: angle-ios-slices
+          path: release-inputs/ios
+
+      - name: Download macOS slice
+        uses: actions/download-artifact@v4
+        with:
+          name: angle-macos-slice
+          path: release-inputs/macos
+
+      - name: Create and verify unified XCFramework
+        run: |
+          mkdir -p dist/ANGLE/build-config staging
+
+          xcodebuild -create-xcframework \
+            -library release-inputs/ios/device/libANGLE.a \
+            -headers release-inputs/ios/Headers \
+            -library release-inputs/ios/simulator/libANGLE.a \
+            -headers release-inputs/ios/Headers \
+            -library release-inputs/macos/macos-arm64/libANGLE.a \
+            -headers release-inputs/macos/Headers \
+            -output dist/ANGLE/ANGLE.xcframework
+
+          plutil -lint dist/ANGLE/ANGLE.xcframework/Info.plist
+          plutil -p dist/ANGLE/ANGLE.xcframework/Info.plist > staging/xcframework-info.txt
+          grep -q 'ios-arm64' staging/xcframework-info.txt
+          grep -q 'ios-arm64-simulator' staging/xcframework-info.txt
+          grep -q 'macos-arm64' staging/xcframework-info.txt
+          test -f dist/ANGLE/ANGLE.xcframework/ios-arm64/libANGLE.a
+          test -f dist/ANGLE/ANGLE.xcframework/ios-arm64-simulator/libANGLE.a
+          test -f dist/ANGLE/ANGLE.xcframework/macos-arm64/libANGLE.a
+
+          cp release-inputs/ios/LICENSE dist/ANGLE/
+          cp PACKAGE_README.md dist/ANGLE/README.md
+          cp -R release-inputs/ios/build-config/. dist/ANGLE/build-config/
+          cp -R release-inputs/macos/build-config/. dist/ANGLE/build-config/
+
+          ditto -c -k --sequesterRsrc --keepParent \
+            dist/ANGLE "$GITHUB_WORKSPACE/ANGLE.xcframework.zip"
+          ls -lh "$GITHUB_WORKSPACE/ANGLE.xcframework.zip"
+
+      - name: Upload unified package
+        uses: actions/upload-artifact@v4
+        with:
+          name: angle-release
+          path: ANGLE.xcframework.zip
           compression-level: 0
           retention-days: 7
           if-no-files-found: error
 
   publish-release:
     name: Upload assets and publish release
-    needs: [create-release, build-ios, build-macos]
+    needs: [create-release, merge-xcframework]
     runs-on: ubuntu-latest
     steps:
       - name: Download packages
         uses: actions/download-artifact@v4
         with:
-          pattern: angle-*-release
+          name: angle-release
           path: release-assets
-          merge-multiple: true
 
       - name: Upload ZIP assets
         env:
@@ -379,7 +414,7 @@ jobs:
         run: |
           shopt -s nullglob
           assets=(release-assets/*.zip)
-          test "${#assets[@]}" -eq 2
+          test "${#assets[@]}" -eq 1
           gh release upload "$RELEASE_TAG" "${assets[@]}" \
             --clobber \
             --repo "$GITHUB_REPOSITORY"

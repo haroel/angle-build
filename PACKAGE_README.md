@@ -2,7 +2,8 @@
 
 This package contains a complete static `libANGLE.a` wrapped in
 `ANGLE.xcframework`. The archive exports both EGL and OpenGL ES entry points;
-only the Metal renderer backend is compiled in.
+only the Metal renderer backend is compiled in. One XCFramework contains iOS
+arm64 device, iOS arm64 simulator, and macOS arm64 platform slices.
 
 ## Xcode integration
 
