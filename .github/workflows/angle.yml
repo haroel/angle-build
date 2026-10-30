@@ -58,6 +58,7 @@ jobs:
               '- Renderer backend: Metal only',
               '- EGL and OpenGL ES entry points are folded into one complete `libANGLE.a`',
               '- Debug symbols, tests, capture, Vulkan, OpenGL and unused translators are disabled',
+              '- Includes the Metal shader helper address-space fix for iOS/macOS 27',
               '',
               '## Assets',
               '',
@@ -138,11 +139,9 @@ jobs:
           cd angle-src
           gclient sync -D --no-history --force --reset
 
-      - name: Make the ANGLE archive self-contained
+      - name: Apply ANGLE packaging and Metal compatibility patches
         run: |
-          cd angle-src/angle
-          git apply --check "$GITHUB_WORKSPACE/patches/angle-complete-static-library.patch"
-          git apply "$GITHUB_WORKSPACE/patches/angle-complete-static-library.patch"
+          bash "$GITHUB_WORKSPACE/scripts/apply-patches.sh" angle-src/angle
 
       - name: Build iOS device
         run: |
@@ -211,6 +210,7 @@ jobs:
           {
             echo "ANGLE_REF=$ANGLE_REF"
             echo "ANGLE_COMMIT=$(git rev-parse HEAD)"
+            echo "PACKAGING_COMMIT=$GITHUB_SHA"
             echo "XCODE_VERSION=$(xcodebuild -version | tr '\n' ' ')"
           } > "$slice_root/build-config/BUILD_INFO.ios.txt"
 
@@ -260,11 +260,9 @@ jobs:
           cd angle-src
           gclient sync -D --no-history --force --reset
 
-      - name: Make the ANGLE archive self-contained
+      - name: Apply ANGLE packaging and Metal compatibility patches
         run: |
-          cd angle-src/angle
-          git apply --check "$GITHUB_WORKSPACE/patches/angle-complete-static-library.patch"
-          git apply "$GITHUB_WORKSPACE/patches/angle-complete-static-library.patch"
+          bash "$GITHUB_WORKSPACE/scripts/apply-patches.sh" angle-src/angle
 
       - name: Ensure the Metal compiler is available
         run: |
@@ -323,6 +321,7 @@ jobs:
           {
             echo "ANGLE_REF=$ANGLE_REF"
             echo "ANGLE_COMMIT=$(git rev-parse HEAD)"
+            echo "PACKAGING_COMMIT=$GITHUB_SHA"
             echo "XCODE_VERSION=$(xcodebuild -version | tr '\n' ' ')"
           } > "$slice_root/build-config/BUILD_INFO.macos.txt"
 
@@ -382,6 +381,8 @@ jobs:
           cp PACKAGE_README.md dist/ANGLE/README.md
           cp -R release-inputs/ios/build-config/. dist/ANGLE/build-config/
           cp -R release-inputs/macos/build-config/. dist/ANGLE/build-config/
+          cp -R patches dist/ANGLE/build-config/
+          shasum -a 256 patches/*.patch > dist/ANGLE/build-config/PATCHES.sha256
 
           ditto -c -k --sequesterRsrc --keepParent \
             dist/ANGLE "$GITHUB_WORKSPACE/ANGLE.xcframework.zip"
