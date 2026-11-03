@@ -1,4 +1,4 @@
-name: Build and publish ANGLE XCFrameworks
+name: Build and publish ANGLE libraries
 
 on:
   workflow_dispatch:
@@ -53,19 +53,20 @@ jobs:
               : requestedTag || `angle-m143-build-${context.runId}`;
             const angleRef = process.env.ANGLE_REF;
             const body = [
-              `ANGLE ${angleRef} precompiled static XCFrameworks`,
+              `ANGLE ${angleRef} precompiled libraries`,
               '',
-              '- Renderer backend: Metal only',
-              '- EGL and OpenGL ES entry points are folded into one complete `libANGLE.a`',
+              '- Apple: Metal-only, EGL/GLES folded into one complete static `libANGLE.a`',
+              '- Windows x64: D3D11-only EGL/GLES DLLs, import libraries and headers',
               '- Debug symbols, tests, capture, Vulkan, OpenGL and unused translators are disabled',
               '- Includes the Metal shader helper address-space fix for iOS/macOS 27',
               '',
               '## Assets',
               '',
               '- `ANGLE.xcframework.zip`: iOS arm64 device, arm64 simulator, and macOS arm64',
+              '- `ANGLE-windows-x64.zip`: Windows x64 Release DLLs, D3D compiler, import libraries and headers',
               '',
-              'The ZIP includes the unified XCFramework, ANGLE license, integration notes,',
-              'source revision, checked-in args.gn and expanded GN arguments.',
+              'Packages include the ANGLE license, integration notes, source revision,',
+              'checked-in args.gn and expanded GN arguments.',
               '',
               '**Download the ZIP assets below; do not use GitHub source archives as binaries.**'
             ].join('\n');
@@ -334,6 +335,85 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  build-windows:
+    name: Build Windows x64 D3D11
+    needs: create-release
+    runs-on: windows-2022
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      DEPOT_TOOLS_WIN_TOOLCHAIN: "0"
+      DEPOT_TOOLS_UPDATE: "0"
+      GYP_MSVS_VERSION: "2022"
+    steps:
+      - name: Checkout packaging repository
+        uses: actions/checkout@v4
+
+      - name: Configure VS2022 and depot_tools
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          git config --global core.autocrlf false
+          git config --global core.longpaths true
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -version '[17.0,18.0)' -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'VS2022 C++ tools are required' }
+          "vs2022_install=$vs" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          $depot = Join-Path $env:RUNNER_TEMP 'angle-depot-tools'
+          git clone --depth 1 $env:DEPOT_TOOLS_REPO $depot
+          $depot | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Checkout ANGLE and Windows dependencies
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          New-Item -ItemType Directory -Force angle-src/angle | Out-Null
+          git -C angle-src/angle init
+          git -C angle-src/angle remote add origin $env:ANGLE_REPO
+          git -C angle-src/angle fetch --depth 1 origin $env:ANGLE_REF
+          git -C angle-src/angle checkout --detach FETCH_HEAD
+          @'
+          solutions = [
+            {
+              "name": "angle",
+              "url": "https://chromium.googlesource.com/angle/angle.git",
+              "managed": False,
+              "custom_deps": {},
+            },
+          ]
+          target_os = ["win"]
+          '@ | Set-Content -Encoding ascii angle-src/.gclient
+          Set-Location angle-src
+          gclient sync -D --no-history --force --reset
+
+      - name: Build D3D11 EGL and GLES DLLs
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          Set-Location angle-src/angle
+          New-Item -ItemType Directory -Force out/windows-x64 | Out-Null
+          Copy-Item "$env:GITHUB_WORKSPACE/args.windows.x64.gn" out/windows-x64/args.gn
+          gn gen out/windows-x64 --fail-on-unused-args
+          autoninja -C out/windows-x64 libEGL libGLESv2 copy_compiler_dll -j 4
+          gn args out/windows-x64 --list | Set-Content out/windows-x64/args.full.txt
+
+      - name: Verify and package Windows SDK
+        shell: cmd
+        run: |
+          call "%vs2022_install%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
+          if errorlevel 1 exit /b %errorlevel%
+          pwsh -NoLogo -NoProfile -File scripts/package-windows.ps1 -AngleSource "%GITHUB_WORKSPACE%\angle-src\angle"
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: angle-windows-release
+          path: ANGLE-windows-x64.zip
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+
   merge-xcframework:
     name: Merge unified XCFramework
     needs: [create-release, build-ios, build-macos]
@@ -399,13 +479,19 @@ jobs:
 
   publish-release:
     name: Upload assets and publish release
-    needs: [create-release, merge-xcframework]
+    needs: [create-release, merge-xcframework, build-windows]
     runs-on: ubuntu-latest
     steps:
       - name: Download packages
         uses: actions/download-artifact@v4
         with:
           name: angle-release
+          path: release-assets
+
+      - name: Download Windows package
+        uses: actions/download-artifact@v4
+        with:
+          name: angle-windows-release
           path: release-assets
 
       - name: Upload ZIP assets
@@ -415,7 +501,9 @@ jobs:
         run: |
           shopt -s nullglob
           assets=(release-assets/*.zip)
-          test "${#assets[@]}" -eq 1
+          test "${#assets[@]}" -eq 2
+          test -f release-assets/ANGLE.xcframework.zip
+          test -f release-assets/ANGLE-windows-x64.zip
           gh release upload "$RELEASE_TAG" "${assets[@]}" \
             --clobber \
             --repo "$GITHUB_REPOSITORY"

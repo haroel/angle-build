@@ -1,26 +1,47 @@
-# ANGLE static XCFramework builds
+# ANGLE Apple and Windows builds
 
 This repository builds a small, Metal-only ANGLE static library for iOS and
-macOS. The pinned default is the maintained ANGLE M143 branch
+macOS, and D3D11-only EGL/GLES DLLs for Windows x64. The pinned default is the
+ANGLE M143 branch
 `chromium/7499` (December 2025).
 
 The GitHub Actions workflow produces:
 
 - `ANGLE.xcframework.zip`: arm64 iPhone/iPad device, arm64 simulator, and
   arm64 Apple Silicon macOS
+- `ANGLE-windows-x64.zip`: x64 Release EGL/GLES DLLs, import libraries,
+  headers, D3D compiler and a D3D11 WARP smoke test
 
 The unified XCFramework contains one complete `libANGLE.a` per platform slice
-with EGL and GLES entry points. Build arguments are kept in the three
+with EGL and GLES entry points. Build arguments are kept in the
 `args.*.gn` files at the repository root. Tag pushes matching `v*` create a
-draft release, build the platform slices in parallel on GitHub's macOS runners,
-merge them into one XCFramework, upload the ZIP, and publish the release. The
+draft release, build Apple slices on macOS runners and Windows DLLs on
+`windows-2022` in parallel, merge the Apple slices into one XCFramework,
+upload both ZIPs, and publish only after both packages pass their checks. The
 workflow can also be run manually with an ANGLE ref and optional release tag.
 
 See `PACKAGE_README.md` for Xcode linker requirements.
+See [Windows integration notes](PACKAGE_README.windows.md) for the DLL layout,
+linker requirements and validation limits. Windows uses VS2022, the Windows
+SDK and Chromium's downloaded clang-cl; `DEPOT_TOOLS_WIN_TOOLCHAIN=0` selects
+the runner's installed Microsoft toolchain. The non-component Release build
+uses `/MT` internally. Its GN arguments are in [args.windows.x64.gn](args.windows.x64.gn).
+
+To build, open **Actions → Build and publish ANGLE libraries → Run workflow**,
+keep the default `angle_ref` or select a compatible upstream ref, and optionally
+set `release_tag`. A `v*` tag push starts the same complete build. Download
+`ANGLE-windows-x64.zip` from the resulting Release or the `angle-windows-release`
+workflow artifact. No personal access token is needed; publishing uses the
+workflow's existing `GITHUB_TOKEN` permissions.
+
+The Windows job compiles and executes [WindowsEGLSmoke.cpp](tests/WindowsEGLSmoke.cpp)
+against the staged package. It checks an ES3 pbuffer shader draw/readback and
+a hidden HWND surface/swap using D3D11 WARP. WARP is a software device and does
+not replace hardware GPU or ARDA integration testing.
 
 ## Source patches
 
-Both platform jobs run `scripts/apply-patches.sh` before GN generation. It
+Both Apple platform jobs run `scripts/apply-patches.sh` before GN generation. It
 applies every patch in `patches/`, skips patches already present upstream,
 and fails if a patch cannot be applied or confirmed as already present.
 
@@ -40,9 +61,12 @@ To apply the same patches to a local ANGLE source checkout:
 bash scripts/apply-patches.sh /path/to/angle
 ```
 
-Release packages include the patch files and SHA-256 checksums under
+Apple release packages include the patch files and SHA-256 checksums under
 `build-config/`, plus the packaging repository commit in each platform's
 `BUILD_INFO` file.
+
+Windows builds use the unpatched upstream ref and record that explicitly in
+`build-config/BUILD_INFO.windows.txt`; the DLL package has its own `SHA256SUMS`.
 
 ## Metal shader regression check
 
