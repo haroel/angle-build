@@ -14,11 +14,13 @@ The GitHub Actions workflow produces:
 
 The unified XCFramework contains one complete `libANGLE.a` per platform slice
 with EGL and GLES entry points. Build arguments are kept in the
-`args.*.gn` files at the repository root. Tag pushes matching `v*` create a
+`args.*.gn` files at the repository root. Pushes to `main` and tags matching `v*` create a
 draft release, build Apple slices on macOS runners and Windows DLLs on
 `windows-2022` in parallel, merge the Apple slices into one XCFramework,
 upload both ZIPs, and publish only after both packages pass their checks. The
 workflow can also be run manually with an ANGLE ref and optional release tag.
+Branch pushes use the default ANGLE ref and publish a release named
+`angle-m143-build-<run id>` after all builds and checks succeed.
 
 See `PACKAGE_README.md` for Xcode linker requirements.
 See [Windows integration notes](PACKAGE_README.windows.md) for the DLL layout,
@@ -29,7 +31,7 @@ uses `/MT` internally. Its GN arguments are in [args.windows.x64.gn](args.window
 
 To build, open **Actions → Build and publish ANGLE libraries → Run workflow**,
 keep the default `angle_ref` or select a compatible upstream ref, and optionally
-set `release_tag`. A `v*` tag push starts the same complete build. Download
+set `release_tag`. Pushing to `main` or a `v*` tag starts the same complete build. Download
 `ANGLE-windows-x64.zip` from the resulting Release or the `angle-windows-release`
 workflow artifact. No personal access token is needed; publishing uses the
 workflow's existing `GITHUB_TOKEN` permissions.
