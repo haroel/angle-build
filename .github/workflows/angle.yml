@@ -366,6 +366,19 @@ jobs:
           "vs2022_install=$vs" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           $depot = Join-Path $env:RUNNER_TEMP 'angle-depot-tools'
           git clone --depth 1 $env:DEPOT_TOOLS_REPO $depot
+          $env:PATH = "$depot;$env:PATH"
+          # A fresh clone needs CIPD/Python bootstrap before updates can be disabled.
+          $env:DEPOT_TOOLS_UPDATE = '1'
+          try {
+            & "$depot/update_depot_tools.bat"
+            if ($LASTEXITCODE -ne 0) { throw "depot_tools initialization failed: $LASTEXITCODE" }
+          }
+          finally { $env:DEPOT_TOOLS_UPDATE = '0' }
+          if (-not (Test-Path "$depot/python3_bin_reldir.txt")) {
+            throw 'depot_tools bootstrap did not create python3_bin_reldir.txt'
+          }
+          & "$depot/python-bin/python3.bat" --version
+          & "$depot/gclient.bat" --version
           $depot | Out-File $env:GITHUB_PATH -Append -Encoding utf8
 
       - name: Checkout ANGLE and Windows dependencies
@@ -388,17 +401,19 @@ jobs:
           target_os = ["win"]
           '@ | Set-Content -Encoding ascii angle-src/.gclient
           Set-Location angle-src
-          gclient sync -D --no-history --force --reset
+          $depot = Join-Path $env:RUNNER_TEMP 'angle-depot-tools'
+          & "$depot/gclient.bat" sync -D --no-history --force --reset
 
       - name: Build D3D11 EGL and GLES DLLs
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
           Set-Location angle-src/angle
+          $depot = Join-Path $env:RUNNER_TEMP 'angle-depot-tools'
           New-Item -ItemType Directory -Force out/windows-x64 | Out-Null
           Copy-Item "$env:GITHUB_WORKSPACE/args.windows.x64.gn" out/windows-x64/args.gn
-          gn gen out/windows-x64 --fail-on-unused-args
-          autoninja -C out/windows-x64 libEGL libGLESv2 copy_compiler_dll -j 4
-          gn args out/windows-x64 --list | Set-Content out/windows-x64/args.full.txt
+          & "$depot/gn.bat" gen out/windows-x64 --fail-on-unused-args
+          & "$depot/autoninja.bat" -C out/windows-x64 libEGL libGLESv2 copy_compiler_dll -j 4
+          & "$depot/gn.bat" args out/windows-x64 --list | Set-Content out/windows-x64/args.full.txt
 
       - name: Verify and package Windows SDK
         shell: cmd

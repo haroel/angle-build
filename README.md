@@ -28,6 +28,8 @@ linker requirements and validation limits. Windows uses VS2022, the Windows
 SDK and Chromium's downloaded clang-cl; `DEPOT_TOOLS_WIN_TOOLCHAIN=0` selects
 the runner's installed Microsoft toolchain. The non-component Release build
 uses `/MT` internally. Its GN arguments are in [args.windows.x64.gn](args.windows.x64.gn).
+The Windows job initializes depot_tools' CIPD/Python environment before
+disabling automatic updates, then invokes that checkout's tools by explicit path.
 
 To build, open **Actions → Build and publish ANGLE libraries → Run workflow**,
 keep the default `angle_ref` or select a compatible upstream ref, and optionally
